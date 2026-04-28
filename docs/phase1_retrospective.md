@@ -222,6 +222,8 @@ async for event in bus.stream():
 
 Phase 1 中 ToolRuntime 已实现但 TriageAgent 暂未调用（直接调用 DepartmentRouter），Phase 2 用药管理接入后会走 ToolRuntime。
 
+**Phase 3 正式接入（更新）**：Phase 3 将 `_act_search()` 改为 LLM Tool Use 模式，通过 `ToolRuntime.call()` 执行 `search_symptom_kb` 工具，TriageAgent 从流水线升级为 ReAct Agent。Phase 1 设计的权限检查、分级超时、重试、审计日志能力在 Phase 3 正式生效。详见 phase2_retrospective.md § 8.1。
+
 ### 5.4 DepartmentRouter — 向量检索
 
 检索策略：检索 `top_k * 5` 条原始结果，按科室聚合取最高相似度，避免单一科室因多条命中而稀释得分。

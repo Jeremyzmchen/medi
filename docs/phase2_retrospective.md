@@ -56,7 +56,7 @@ Agent 层
     │     └── ★ _enrich_region()：LLM 推断缺失部位
     ├── Act
     │     ├── LLM 生成 OPQRST 追问（替代硬编码模板）
-    │     └── DepartmentRouter 向量检索
+    │     └── ★★ LLM Tool Use → ToolRuntime → DepartmentRouter（Phase 3 升级）
     ├── Observe（透传）
     └── Respond
           ├── ★ 注入 OPQRST 症状摘要
@@ -66,7 +66,7 @@ Agent 层
 基础设施层
   ★ UnifiedContext    — 新增 messages 对话历史
   AsyncStreamBus      — 异步事件总线
-  ToolRuntime         — 统一工具执行
+  ★★ ToolRuntime      — Phase 1 已实现，Phase 3 正式接入（注册 search_symptom_kb）
 
 记忆层
   ★ HealthProfile     — SQLite 用户静态档案（硬约束）
@@ -101,7 +101,7 @@ INIT
               │
             SUFFICIENT
               │
-            SEARCHING（Act：向量检索）
+            SEARCHING（Act：LLM Tool Use → ToolRuntime → 向量检索）
               │
             RESPONDING（Respond：LLM 生成建议）
               │
@@ -444,7 +444,8 @@ Phase 2 中一次完整分诊（含追问）涉及的 LLM 调用：
 | `classify_intent()` | gpt-4o-mini | 15 | 每个子问题各调一次 |
 | `_enrich_region()` | gpt-4o-mini | 10 | NER 未提取到部位时 |
 | `build_follow_up_question()` | gpt-4o-mini | 80 | 信息不足需追问时 |
-| `_respond()` | gpt-4o | 1000 | 信息充分后生成建议 |
+| `_act_search()` Tool Use | gpt-4o-mini | 100 | 信息充分后，LLM 决定调用 search_symptom_kb |
+| `_respond()` | gpt-4o | 1000 | 工具返回结果后生成建议 |
 | `MedicationAgent.handle()` | gpt-4o | 600 | medication 意图时 |
 | `handle_followup()` | gpt-4o-mini | 300 | followup 意图时 |
 
@@ -512,13 +513,87 @@ Phase 2 中一次完整分诊（含追问）涉及的 LLM 调用：
 
 ---
 
-## 八、Phase 3 待办
+## 八、Phase 3 已完成升级
+
+### 8.1 Tool Use — TriageAgent 从流水线升级为 ReAct Agent
+
+**升级前（Phase 1/2）**
+
+```python
+# _act_search() 直接调 Python 方法，LLM 不参与决策
+query = self._symptom_info.to_query_text()
+candidates = await self._router.route(query)
+```
+
+流水线模式：代码硬编码"一定要检索"，LLM 只负责最后生成建议。
+
+**升级后（Phase 3）**
+
+```python
+# LLM 收到症状摘要，自主决定调用工具
+response = await client.chat.completions.create(
+    tools=[SEARCH_SYMPTOM_KB_SCHEMA],
+    tool_choice="auto",
+    messages=act_messages,
+)
+# ToolRuntime 执行工具，把结果返回给 LLM
+tool_result = await self._tool_runtime.call("search_symptom_kb", query=...)
+```
+
+ReAct 模式：LLM 自主决策 → ToolRuntime 执行 → LLM 拿结果生成建议。
+
+**新增文件：`medi/agents/triage/tools.py`**
+
+```python
+SEARCH_SYMPTOM_KB_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "search_symptom_kb",
+        "description": "在症状-科室知识库中检索，根据症状描述返回最匹配的科室候选列表",
+        "parameters": {"query": "症状描述文本"},
+    },
+}
+
+def make_search_tool(router: DepartmentRouter) -> ToolDefinition:
+    """把 DepartmentRouter.route() 包装为 ToolDefinition"""
+    async def search_symptom_kb(query: str) -> dict:
+        candidates = await router.route(query)
+        return {"candidates": [...]}  # 序列化为 dict 供 LLM 读取
+    return ToolDefinition(name="search_symptom_kb", priority=STANDARD, fn=search_symptom_kb)
+```
+
+**ToolRuntime 在 Phase 1 已实现，Phase 3 正式接入**
+
+Phase 1 的 ToolRuntime 包含：权限检查（`ctx.has_tool()`）、分级超时、重试、审计日志。Phase 3 通过 `make_search_tool()` 注册工具后，这些能力自动生效。
+
+**为什么不强制调用工具（`tool_choice="required"`）**
+
+强制调用退化成流水线——和直接调 `DepartmentRouter` 没有区别。`tool_choice="auto"` 保留 LLM 自主判断空间，为未来多工具场景（"要不要同时查药物冲突？"）打基础。
+
+**扩展多工具无需改 Agent 主流程**
+
+未来加 `check_drug_interaction`、`get_lab_indicators` 等工具，只需：
+1. 在 `tools.py` 定义新工具
+2. `self._tool_runtime.register(make_new_tool())` 注册
+3. 把新 schema 加入 `tools` 列表
+
+TriageAgent 的 `_act_search()` 主循环不需要修改。
+
+### 8.2 就诊记录展示优化
+
+- **科室名清洗**：`_clean_department()` 去掉数据集携带的序号（"1. 神经科" → "神经科"）
+- **多行展示**：`chief_complaint` 从截断单行改为按 OPQRST 字段分行展示
+
+---
+
+## 九、Phase 3 待办
 
 | 模块 | 内容 | 优先级 |
 |------|------|--------|
-| MemoryDistiller | 设计有缺陷，等历史数据积累后重新设计 | 低 |
 | MedicationAgent 接 API | 替换 GPT-4o，接 NMPA/RxNorm/OpenFDA 药物数据库 | 高 |
 | MedicationAgent 多模态 | 拍药盒/说明书图片，视觉模型提取药物名后查库 | 中 |
+| 多工具扩展 | 注册 check_drug_interaction、get_lab_indicators 等工具 | 中 |
 | Think 阶段 LLM 充分性判断 | 替代规则 `is_sufficient()`，解决分诊完成后伴随症状误判问题 | 中 |
 | 全量向量索引 | build_index.py 跑全量 17.7 万条 | 中 |
+| MemoryDistiller | 设计有缺陷，等历史数据积累后重新设计 | 低 |
 | API 层 | FastAPI 接口，供前端或移动端接入 | 低 |
