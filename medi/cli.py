@@ -2,8 +2,8 @@
 Medi CLI 入口
 
 用法：
-  medi chat              # 开始分诊对话
-  medi chat --user-id u1 # 指定用户（加载健康档案）
+  medi                    # 开始分诊对话（guest 用户）
+  medi --user-id u1       # 指定用户（加载健康档案）
 """
 
 from __future__ import annotations
@@ -19,32 +19,87 @@ from medi.core.context import UnifiedContext, ModelConfig
 from medi.core.stream_bus import AsyncStreamBus, EventType
 from medi.agents.triage.agent import TriageAgent
 from medi.agents.triage.department_router import DepartmentRouter
+from medi.agents.orchestrator import OrchestratorAgent, Intent
+from medi.memory.health_profile import HealthProfile, load_profile, save_profile
 
-app = typer.Typer(name="medi", help="Medi 智能健康 Agent")
+app = typer.Typer(name="medi", help="Medi 智能健康 Agent", invoke_without_command=True)
 console = Console()
+
+
+async def _collect_profile(user_id: str) -> HealthProfile:
+    """首次使用时引导用户填写健康档案"""
+    console.print("\n[yellow]您是第一次使用 Medi，请先完善您的健康档案（更准确的分诊建议）[/yellow]")
+    console.print("[dim]直接回车可跳过某项[/dim]\n")
+
+    profile = HealthProfile(user_id=user_id)
+
+    age_input = console.input("年龄：").strip()
+    if age_input.isdigit():
+        profile.age = int(age_input)
+
+    gender_input = console.input("性别（男/女）：").strip()
+    if gender_input in ("男", "女"):
+        profile.gender = gender_input
+
+    allergies_input = console.input("过敏史（如：青霉素、磺胺，多个用逗号分隔）：").strip()
+    if allergies_input:
+        profile.allergies = [a.strip() for a in allergies_input.split("，") if a.strip()]
+        # 兼容英文逗号
+        if not profile.allergies:
+            profile.allergies = [a.strip() for a in allergies_input.split(",") if a.strip()]
+
+    chronic_input = console.input("慢性病史（如：高血压、糖尿病，多个用逗号分隔）：").strip()
+    if chronic_input:
+        profile.chronic_conditions = [c.strip() for c in chronic_input.split("，") if c.strip()]
+        if not profile.chronic_conditions:
+            profile.chronic_conditions = [c.strip() for c in chronic_input.split(",") if c.strip()]
+
+    meds_input = console.input("当前用药（如：二甲双胍，多个用逗号分隔）：").strip()
+    if meds_input:
+        profile.current_medications = [m.strip() for m in meds_input.split("，") if m.strip()]
+        if not profile.current_medications:
+            profile.current_medications = [m.strip() for m in meds_input.split(",") if m.strip()]
+
+    await save_profile(profile)
+    console.print("\n[green]档案已保存[/green]")
+    return profile
 
 
 async def _chat_loop(user_id: str) -> None:
     session_id = str(uuid.uuid4())[:8]
+
+    # 加载健康档案，首次使用引导填写
+    profile = await load_profile(user_id)
+    if not profile.is_complete() and user_id != "guest":
+        profile = await _collect_profile(user_id)
+    elif profile.is_complete():
+        console.print(f"\n[dim]已加载健康档案：{profile.gender}，{profile.age}岁[/dim]")
 
     ctx = UnifiedContext(
         user_id=user_id,
         session_id=session_id,
         model_config=ModelConfig(),
         enabled_tools={"search_symptom_kb", "evaluate_urgency", "get_department_info"},
+        health_profile=profile,
     )
-    router = DepartmentRouter()  # 懒加载，只初始化一次（bge 模型只加载一次）
+    router = DepartmentRouter()
     bus = AsyncStreamBus()
-    agent = TriageAgent(ctx=ctx, bus=bus, router=router)
+    orchestrator = OrchestratorAgent(ctx=ctx, bus=bus)
+    agent = TriageAgent(
+        ctx=ctx,
+        bus=bus,
+        router=router,
+        on_result=orchestrator.update_last_response,
+    )
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的症状，输入 [bold]quit[/bold] 退出\n")
 
     async def handle_turn(user_input: str) -> None:
-        """处理一轮对话，每轮重建 bus，agent 复用（保留症状积累状态）"""
         nonlocal bus
         bus = AsyncStreamBus()
-        agent._bus = bus  # agent 复用，只换 bus
+        agent._bus = bus
+        orchestrator._bus = bus
 
         async def consume() -> None:
             async for event in bus.stream():
@@ -57,7 +112,17 @@ async def _chat_loop(user_id: str) -> None:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            await agent.handle(user_input)
+            intent = await orchestrator.classify_intent(user_input)
+
+            if intent == Intent.OUT_OF_SCOPE:
+                await orchestrator.handle_out_of_scope()
+            elif intent == Intent.FOLLOWUP:
+                await orchestrator.handle_followup(user_input)
+            else:
+                # SYMPTOM / MEDICATION → 路由到对应 Agent
+                # Phase 2: MEDICATION → MedicationAgent，目前统一走 TriageAgent
+                await agent.handle(user_input)
+
             await bus.close()
 
         await asyncio.gather(consume(), produce())

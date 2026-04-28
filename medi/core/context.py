@@ -57,6 +57,15 @@ class UnifiedContext:
     # 工具权限
     enabled_tools: set[str] = field(default_factory=set)
 
+    # 会话内对话历史（传给 LLM，保留完整上下文）
+    messages: list[dict] = field(default_factory=list)
+
+    def add_user_message(self, content: str) -> None:
+        self.messages.append({"role": "user", "content": content})
+
+    def add_assistant_message(self, content: str) -> None:
+        self.messages.append({"role": "assistant", "content": content})
+
     def transition(self, new_state: DialogueState) -> None:
         self.dialogue_state = new_state
 

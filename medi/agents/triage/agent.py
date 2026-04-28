@@ -34,18 +34,21 @@ class TriageAgent:
         ctx: UnifiedContext,
         bus: AsyncStreamBus,
         router: DepartmentRouter | None = None,
+        on_result=None,  # 回调：建议生成后通知 Orchestrator
     ) -> None:
         self._ctx = ctx
         self._bus = bus
         self._router = router or DepartmentRouter()
         self._client = AsyncOpenAI()
         self._symptom_info = SymptomInfo()
+        self._on_result = on_result  # Callable[[str], None]
         # NER 模型懒加载（首次调用时初始化，避免启动慢）
         self._ner = None
 
     async def handle(self, user_input: str) -> None:
         """处理一轮用户输入，驱动状态机前进"""
         self._symptom_info.raw_descriptions.append(user_input)
+        self._ctx.add_user_message(user_input)
 
         # Safety-First：规则层前置扫描，不等 LLM
         urgency = evaluate_urgency_by_rules(user_input)
@@ -176,26 +179,29 @@ class TriageAgent:
 
         system = f"""你是一位专业的分诊助手，帮助用户判断应就诊的科室。
 回答要简洁、专业、有温度。不做最终诊断，只做科室引导。
+结合完整对话历史理解用户的全部症状，不要只看最后一条消息。
 
 {constraint_prompt}"""
 
-        user_msg = f"""用户症状描述：{self._symptom_info.to_query_text()}
+        # 在完整对话历史后追加一条系统注入的检索结果
+        retrieval_note = (
+            f"[知识库检索结果]\n{dept_list}\n\n"
+            "请基于以上检索结果和完整对话历史给出：\n"
+            "1. 建议就诊科室（优先级排序）\n"
+            "2. 紧急程度（紧急/较急/普通/可观察）\n"
+            "3. 简要就医建议（1-2 句）"
+        )
 
-知识库检索结果：
-{dept_list}
-
-请基于以上信息给出：
-1. 建议就诊科室（优先级排序）
-2. 紧急程度（紧急/较急/普通/可观察）
-3. 简要就医建议（1-2 句）"""
+        messages = (
+            [{"role": "system", "content": system}]
+            + self._ctx.messages
+            + [{"role": "user", "content": retrieval_note}]
+        )
 
         response = await self._client.chat.completions.create(
             model=self._ctx.model_config.smart,
             max_tokens=TRIAGE_TOKEN_BUDGET["respond"],
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
         )
 
         content = response.choices[0].message.content
@@ -204,7 +210,12 @@ class TriageAgent:
             data={"content": content},
             session_id=self._ctx.session_id,
         ))
-        # 重置状态，支持用户继续描述新症状或追问
+        # 把 assistant 回复追加进对话历史
+        self._ctx.add_assistant_message(content)
+        # 通知 Orchestrator 记录本次建议，供 followup 使用
+        if self._on_result:
+            self._on_result(content)
+        # 重置状态机和追问计数，但保留 symptom_info 积累（同一会话内）
         self._ctx.transition(DialogueState.INIT)
         self._ctx.follow_up_count = 0
         self._symptom_info = SymptomInfo()
