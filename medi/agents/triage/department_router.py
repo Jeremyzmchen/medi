@@ -82,7 +82,7 @@ class DepartmentRouter:
         # 按科室聚合：取每个科室的最高相似度
         dept_best: dict[str, tuple[float, str]] = {}  # dept -> (similarity, example_doc)
         for dist, meta, doc in zip(distances, metadatas, documents):
-            dept = meta.get("department", "其他")
+            dept = _clean_department(meta.get("department", "其他"))
             similarity = max(0.0, 1.0 - dist / 2.0)  # 余弦距离 -> 相似度
             if dept not in dept_best or similarity > dept_best[dept][0]:
                 dept_best[dept] = (similarity, doc)
@@ -99,3 +99,12 @@ class DepartmentRouter:
             ))
 
         return candidates
+
+
+def _clean_department(name: str) -> str:
+    """清洗科室名，去掉数据集中可能携带的序号和标点（如 '1. 神经科' → '神经科'）"""
+    import re
+    name = name.strip()
+    # 去掉开头的数字序号，如 "1." "2、" "（1）"
+    name = re.sub(r"^[\d（\(]+[\.\、\）\)]\s*", "", name)
+    return name.strip()
