@@ -21,6 +21,7 @@ from medi.agents.triage.agent import TriageAgent
 from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent, Intent
 from medi.agents.triage.symptom_collector import SymptomInfo
+from medi.agents.medication.agent import MedicationAgent
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
 from medi.memory.episodic import EpisodicMemory
 
@@ -93,6 +94,7 @@ async def _chat_loop(user_id: str) -> None:
         router=router,
         on_result=orchestrator.update_last_response,
     )
+    medication_agent = MedicationAgent(ctx=ctx, bus=bus)
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的症状，输入 [bold]quit[/bold] 退出")
@@ -114,6 +116,7 @@ async def _chat_loop(user_id: str) -> None:
         bus = AsyncStreamBus()
         agent._bus = bus
         orchestrator._bus = bus
+        medication_agent._bus = bus
 
         async def consume() -> None:
             async for event in bus.stream():
@@ -138,9 +141,10 @@ async def _chat_loop(user_id: str) -> None:
                 ctx.messages.clear()
                 agent._symptom_info = SymptomInfo()
                 await agent.handle(user_input)
+            elif intent == Intent.MEDICATION:
+                await medication_agent.handle(user_input)
             else:
-                # SYMPTOM / MEDICATION → 路由到对应 Agent
-                # Phase 2: MEDICATION → MedicationAgent，目前统一走 TriageAgent
+                # SYMPTOM → TriageAgent
                 await agent.handle(user_input)
 
             await bus.close()
