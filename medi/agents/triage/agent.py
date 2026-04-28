@@ -19,6 +19,7 @@ from medi.agents.triage.urgency_evaluator import (
     EMERGENCY_RESPONSE,
 )
 from medi.agents.triage.department_router import DepartmentRouter
+from medi.memory.episodic import EpisodicMemory
 
 TRIAGE_TOKEN_BUDGET = {
     "think":   200,
@@ -42,6 +43,7 @@ class TriageAgent:
         self._client = AsyncOpenAI()
         self._symptom_info = SymptomInfo()
         self._on_result = on_result  # Callable[[str], None]
+        self._episodic = EpisodicMemory(ctx.user_id)
         # NER 模型懒加载（首次调用时初始化，避免启动慢）
         self._ner = None
 
@@ -233,6 +235,7 @@ class TriageAgent:
         ))
 
         constraint_prompt = self._ctx.build_constraint_prompt()
+        history_prompt = await self._episodic.build_history_prompt()
         dept_list = "\n".join(
             f"- {c.department}（置信度 {c.confidence:.0%}）：{c.reason}"
             for c in candidates
@@ -243,7 +246,8 @@ class TriageAgent:
 回答要简洁、专业、有温度。不做最终诊断，只做科室引导。
 结合完整对话历史理解用户的全部症状，不要只看最后一条消息。
 
-{constraint_prompt}"""
+{constraint_prompt}
+{history_prompt}"""
 
         # 在完整对话历史后追加结构化症状摘要 + 知识库检索结果
         retrieval_note = (
@@ -275,6 +279,11 @@ class TriageAgent:
         ))
         # 把 assistant 回复追加进对话历史
         self._ctx.add_assistant_message(content)
+        # 保存分诊记录到 EpisodicMemory
+        await self._episodic.save(
+            symptom_summary=symptom_summary,
+            advice=content,
+        )
         # 通知 Orchestrator 记录本次建议，供 followup 使用
         if self._on_result:
             self._on_result(content)

@@ -22,6 +22,7 @@ from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent, Intent
 from medi.agents.triage.symptom_collector import SymptomInfo
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
+from medi.memory.episodic import EpisodicMemory
 
 app = typer.Typer(name="medi", help="Medi 智能健康 Agent", invoke_without_command=True)
 console = Console()
@@ -94,7 +95,19 @@ async def _chat_loop(user_id: str) -> None:
     )
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
-    console.print("请描述您的症状，输入 [bold]quit[/bold] 退出\n")
+    console.print("请描述您的症状，输入 [bold]quit[/bold] 退出")
+
+    # 展示最近就诊记录
+    if user_id != "guest":
+        episodic = EpisodicMemory(user_id)
+        recent = await episodic.recent(limit=3)
+        if recent:
+            console.print("\n[dim]最近就诊记录：[/dim]")
+            for r in recent:
+                date_str = r.visit_date.strftime("%m-%d")
+                complaint = r.chief_complaint[:30].replace("\n", " ")
+                console.print(f"[dim]  {date_str} | {r.department} | {complaint}[/dim]")
+    console.print()
 
     async def handle_turn(user_input: str) -> None:
         nonlocal bus
