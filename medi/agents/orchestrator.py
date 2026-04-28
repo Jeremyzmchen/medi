@@ -6,9 +6,10 @@ OrchestratorAgent — 意图识别 + 子 Agent 路由
   2. 根据意图路由到对应 Agent，或直接回复边界提示
 
 意图类别（人工定义，LLM 做分类）：
-  symptom     — 描述身体不适、症状、疼痛，需要分诊
-  medication  — 咨询药物、用量、副作用、药物冲突
-  followup    — 追问刚才给出的建议（科室详情、紧急程度解释等）
+  symptom      — 补充当前分诊过程中的症状信息（分诊进行中）
+  new_symptom  — 全新的、与当前分诊无关的新主诉（分诊已完成后）
+  medication   — 咨询药物、用量、副作用、药物冲突
+  followup     — 追问对话中任何已有内容（科室位置、紧急程度、就诊流程等）
   out_of_scope — 医院推荐、挂号、天气等超出范围的问题
 """
 
@@ -18,14 +19,15 @@ from enum import Enum
 
 from openai import AsyncOpenAI
 
-from medi.core.context import UnifiedContext
+from medi.core.context import DialogueState, UnifiedContext
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
 
 # 意图描述（注入 LLM prompt，直接影响分类准确率）
 _INTENT_DESCRIPTIONS = {
-    "symptom": "用户在描述身体不适、症状、疼痛、发烧、头晕等，需要分诊指导",
+    "symptom": "用户在补充当前分诊过程中的症状信息，包括伴随症状、发作时间、诱因等",
+    "new_symptom": "用户描述了与之前完全无关的新身体不适，或上一次分诊已完成后重新开始描述新症状",
     "medication": "用户在咨询药物名称、用药剂量、副作用、两种药能否同时吃等用药问题",
-    "followup": "用户在追问刚才给出的分诊建议，例如询问科室在哪、紧急程度是什么意思、还需要做什么检查等",
+    "followup": "用户在追问对话中任何已有内容，包括科室位置、就诊流程、紧急程度含义、需要做什么检查等",
     "out_of_scope": "用户问了超出医疗咨询范围的问题，例如推荐医院、如何挂号、天气、闲聊等",
 }
 
@@ -38,6 +40,7 @@ _OUT_OF_SCOPE_REPLY = (
 
 class Intent(Enum):
     SYMPTOM      = "symptom"
+    NEW_SYMPTOM  = "new_symptom"
     MEDICATION   = "medication"
     FOLLOWUP     = "followup"
     OUT_OF_SCOPE = "out_of_scope"
@@ -50,32 +53,55 @@ class OrchestratorAgent:
         self._client = AsyncOpenAI()
         self._last_response: str = ""   # 上一次给出的建议，供 followup 时作上下文
 
-    async def classify_intent(self, user_input: str) -> Intent:
-        """用 gpt-4o-mini 做意图分类，返回 Intent 枚举"""
+    async def classify_intent(
+        self,
+        user_input: str,
+        symptom_summary: str = "",
+    ) -> Intent:
+        """
+        用 gpt-4o-mini 做意图分类，返回 Intent 枚举。
+
+        注入三类上下文信号：
+          1. dialogue_state — 分诊是否进行中（COLLECTING）或已完成（INIT）
+          2. symptom_summary — 当前已收集的 OPQRST 摘要
+          3. 近期对话历史 — 让分类器感知上下文
+        """
         intent_list = "\n".join(
             f"- {name}: {desc}"
             for name, desc in _INTENT_DESCRIPTIONS.items()
         )
 
-        # 带上对话历史，让分类器能判断"我是摔倒的"是 followup 还是新症状
+        state = self._ctx.dialogue_state.value
+        state_hint = (
+            "（注意：当前分诊正在进行中，用户新输入很可能是症状补充而非新主诉）"
+            if self._ctx.dialogue_state == DialogueState.COLLECTING
+            else "（注意：上一次分诊已完成，用户新输入更可能是新主诉）"
+        )
+
+        symptom_context = ""
+        if symptom_summary and symptom_summary != "（无结构化信息）":
+            symptom_context = f"\n\n[当前已收集的症状信息]\n{symptom_summary}"
+
         history_context = ""
         if self._ctx.messages:
-            history_context = "\n\n[当前对话历史]\n" + "\n".join(
+            history_context = "\n\n[近期对话历史]\n" + "\n".join(
                 f"{m['role']}: {m['content'][:100]}"
-                for m in self._ctx.messages[-6:]  # 最近 3 轮
+                for m in self._ctx.messages[-6:]
             )
 
         response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.fast,  # gpt-4o-mini
-            max_tokens=10,
+            model=self._ctx.model_config.fast,
+            max_tokens=15,
             temperature=0,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "你是一个意图分类器。根据用户最新输入和对话历史，从以下类别中选择最匹配的一个，"
-                        "只输出类别名，不要输出其他内容。\n\n"
-                        f"{intent_list}"
+                        "你是一个医疗对话意图分类器。根据对话状态、已收集症状和用户最新输入，"
+                        "从以下类别中选择最匹配的一个，只输出类别名，不要输出其他内容。\n\n"
+                        f"[对话状态] {state} {state_hint}\n\n"
+                        f"[意图类别]\n{intent_list}"
+                        f"{symptom_context}"
                         f"{history_context}"
                     ),
                 },

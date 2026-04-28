@@ -81,9 +81,11 @@ class TriageAgent:
             session_id=self._ctx.session_id,
         ))
 
-        # 简单规则判断（Phase 1），后续可换 LLM 判断
-        # 从用户输入中提取基本症状信息
         self._extract_symptom_info(user_input)
+
+        # NER 未能提取到部位时，用 LLM 兜底推断
+        if not self._symptom_info.region:
+            await self._enrich_region(user_input)
 
         if not self._symptom_info.is_sufficient() and self._ctx.can_follow_up():
             # 信息不足，进入追问
@@ -155,6 +157,31 @@ class TriageAgent:
                 if kw in text:
                     self._symptom_info.provocation = text
                     break
+
+    async def _enrich_region(self, text: str) -> None:
+        """
+        NER 未提取到解剖部位时，用 LLM 推断症状对应的身体部位。
+        例："腹泻" → "腹部"，"头晕" → "头部"，"咳嗽" → "胸/呼吸道"
+        输出"未知"时不写入，让后续追问来补。
+        """
+        response = await self._client.chat.completions.create(
+            model=self._ctx.model_config.fast,
+            max_tokens=10,
+            temperature=0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个医学助手。根据用户描述的症状，推断最可能对应的解剖部位，"
+                        "只输出部位名称（1-4个字），无法判断时输出'未知'。"
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        result = response.choices[0].message.content.strip()
+        if result and result != "未知" and result != "'未知'":
+            self._symptom_info.region = result
 
     async def _act_follow_up(self) -> None:
         """Act 阶段：用 LLM 生成 OPQRST 追问"""

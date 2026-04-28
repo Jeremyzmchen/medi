@@ -20,6 +20,7 @@ from medi.core.stream_bus import AsyncStreamBus, EventType
 from medi.agents.triage.agent import TriageAgent
 from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent, Intent
+from medi.agents.triage.symptom_collector import SymptomInfo
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
 
 app = typer.Typer(name="medi", help="Medi 智能健康 Agent", invoke_without_command=True)
@@ -112,12 +113,18 @@ async def _chat_loop(user_id: str) -> None:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            intent = await orchestrator.classify_intent(user_input)
+            symptom_summary = agent._symptom_info.to_summary()
+            intent = await orchestrator.classify_intent(user_input, symptom_summary)
 
             if intent == Intent.OUT_OF_SCOPE:
                 await orchestrator.handle_out_of_scope()
             elif intent == Intent.FOLLOWUP:
                 await orchestrator.handle_followup(user_input)
+            elif intent == Intent.NEW_SYMPTOM:
+                # 新主诉：清空对话历史和症状信息，重新开始分诊
+                ctx.messages.clear()
+                agent._symptom_info = SymptomInfo()
+                await agent.handle(user_input)
             else:
                 # SYMPTOM / MEDICATION → 路由到对应 Agent
                 # Phase 2: MEDICATION → MedicationAgent，目前统一走 TriageAgent
