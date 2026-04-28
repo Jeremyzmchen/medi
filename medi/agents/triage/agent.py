@@ -95,8 +95,9 @@ class TriageAgent:
 
     def _extract_symptom_info(self, text: str) -> None:
         """
-        用 NER 模型从文本中提取解剖部位和症状实体。
-        模型：Adapting/bert-base-chinese-finetuned-NER-biomedical
+        从文本中提取 OPQRST 症状字段：
+        - NER 模型：解剖部位(R) + 伴随症状
+        - 关键词规则：时间(T)、诱因(O)、性质(Q)、程度(S)、加重缓解(P)
         """
         if self._ner is None:
             self._ner = hf_pipeline(
@@ -111,26 +112,59 @@ class TriageAgent:
             label = ent["entity_group"]
             word = ent["word"].replace(" ", "")  # 去掉 tokenizer 分词空格
 
-            # 解剖部位 → location
-            if "部位" in label and not self._symptom_info.location:
-                self._symptom_info.location = word
+            # 解剖部位 → R（region）
+            if "部位" in label and not self._symptom_info.region:
+                self._symptom_info.region = word
 
             # 症状 → accompanying
             elif "症状" in label:
                 if word not in self._symptom_info.accompanying:
                     self._symptom_info.accompanying.append(word)
 
-        # 时间信息用关键词兜底（NER 模型对时间实体识别较弱）
-        if not self._symptom_info.duration:
-            for kw in ["天", "小时", "分钟", "周", "个月", "年", "昨", "今", "刚"]:
+        # T — 时间/持续时长（NER 对时间实体弱，用关键词兜底）
+        if not self._symptom_info.time_pattern:
+            for kw in ["天", "小时", "分钟", "周", "个月", "年", "昨", "今", "刚", "最近", "一直"]:
                 if kw in text:
-                    self._symptom_info.duration = text
+                    self._symptom_info.time_pattern = text
+                    break
+
+        # O — 发作诱因关键词
+        if not self._symptom_info.onset:
+            for kw in ["吃", "喝", "运动", "跑", "劳累", "睡", "受凉", "着凉", "摔", "撞", "扭"]:
+                if kw in text:
+                    self._symptom_info.onset = text
+                    break
+
+        # Q — 症状性质关键词
+        if not self._symptom_info.quality:
+            for kw in ["刺痛", "钝痛", "胀痛", "酸痛", "烧灼", "压迫", "撕裂", "绞痛", "麻", "痒"]:
+                if kw in text:
+                    self._symptom_info.quality = kw
+                    break
+
+        # S — 严重程度（数字评分）
+        if not self._symptom_info.severity:
+            import re
+            m = re.search(r"([0-9]|10)\s*分", text)
+            if m:
+                self._symptom_info.severity = m.group(1)
+
+        # P — 加重缓解关键词
+        if not self._symptom_info.provocation:
+            for kw in ["变重", "加重", "变轻", "缓解", "好转", "休息", "活动后", "饭后", "弯腰"]:
+                if kw in text:
+                    self._symptom_info.provocation = text
                     break
 
     async def _act_follow_up(self) -> None:
-        """Act 阶段：生成追问"""
+        """Act 阶段：用 LLM 生成 OPQRST 追问"""
         self._ctx.increment_follow_up()
-        question = build_follow_up_question(self._symptom_info.missing_fields())
+        question = await build_follow_up_question(
+            missing=self._symptom_info.missing_fields(),
+            symptom_info=self._symptom_info,
+            client=self._client,
+            fast_model=self._ctx.model_config.fast,
+        )
 
         await self._bus.emit(StreamEvent(
             type=EventType.FOLLOW_UP,
@@ -176,6 +210,7 @@ class TriageAgent:
             f"- {c.department}（置信度 {c.confidence:.0%}）：{c.reason}"
             for c in candidates
         )
+        symptom_summary = self._symptom_info.to_summary()
 
         system = f"""你是一位专业的分诊助手，帮助用户判断应就诊的科室。
 回答要简洁、专业、有温度。不做最终诊断，只做科室引导。
@@ -183,13 +218,14 @@ class TriageAgent:
 
 {constraint_prompt}"""
 
-        # 在完整对话历史后追加一条系统注入的检索结果
+        # 在完整对话历史后追加结构化症状摘要 + 知识库检索结果
         retrieval_note = (
+            f"[OPQRST 症状摘要]\n{symptom_summary}\n\n"
             f"[知识库检索结果]\n{dept_list}\n\n"
-            "请基于以上检索结果和完整对话历史给出：\n"
+            "请基于以上信息和完整对话历史给出：\n"
             "1. 建议就诊科室（优先级排序）\n"
             "2. 紧急程度（紧急/较急/普通/可观察）\n"
-            "3. 简要就医建议（1-2 句）"
+            "3. 简要就医建议（1-2 句，可提及医生会进一步询问哪些信息）"
         )
 
         messages = (
