@@ -107,9 +107,12 @@ async def _chat_loop(user_id: str) -> None:
             console.print("\n[dim]最近就诊记录：[/dim]")
             for r in recent:
                 date_str = r.visit_date.strftime("%m-%d")
-                # chief_complaint 是多行 OPQRST 摘要，取第一行（部位）展示
-                first_line = r.chief_complaint.splitlines()[0] if r.chief_complaint else ""
-                console.print(f"[dim]  {date_str} | {r.department} | {first_line}[/dim]")
+                console.print(f"[dim]  {date_str} | {r.department}[/dim]")
+                if r.chief_complaint:
+                    # 每个 OPQRST 字段一行，缩进对齐，过滤掉空行
+                    fields = [line.strip() for line in r.chief_complaint.splitlines() if line.strip()]
+                    detail = " | ".join(fields)
+                    console.print(f"[dim]       {detail}[/dim]")
     console.print()
 
     async def handle_turn(user_input: str) -> None:
