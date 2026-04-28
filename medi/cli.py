@@ -129,23 +129,26 @@ async def _chat_loop(user_id: str) -> None:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            symptom_summary = agent._symptom_info.to_summary()
-            intent = await orchestrator.classify_intent(user_input, symptom_summary)
+            # 先拆分混合输入，再对每个子问题分别路由
+            sub_questions = await orchestrator.decompose_input(user_input)
 
-            if intent == Intent.OUT_OF_SCOPE:
-                await orchestrator.handle_out_of_scope()
-            elif intent == Intent.FOLLOWUP:
-                await orchestrator.handle_followup(user_input)
-            elif intent == Intent.NEW_SYMPTOM:
-                # 新主诉：清空对话历史和症状信息，重新开始分诊
-                ctx.messages.clear()
-                agent._symptom_info = SymptomInfo()
-                await agent.handle(user_input)
-            elif intent == Intent.MEDICATION:
-                await medication_agent.handle(user_input)
-            else:
-                # SYMPTOM → TriageAgent
-                await agent.handle(user_input)
+            for question in sub_questions:
+                symptom_summary = agent._symptom_info.to_summary()
+                intent = await orchestrator.classify_intent(question, symptom_summary)
+
+                if intent == Intent.OUT_OF_SCOPE:
+                    await orchestrator.handle_out_of_scope()
+                elif intent == Intent.FOLLOWUP:
+                    await orchestrator.handle_followup(question)
+                elif intent == Intent.NEW_SYMPTOM:
+                    ctx.messages.clear()
+                    agent._symptom_info = SymptomInfo()
+                    await agent.handle(question)
+                elif intent == Intent.MEDICATION:
+                    await medication_agent.handle(question)
+                else:
+                    # SYMPTOM → TriageAgent
+                    await agent.handle(question)
 
             await bus.close()
 
