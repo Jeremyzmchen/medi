@@ -3,15 +3,22 @@ TriageAgent — 智能分诊 Agent
 
 TAOR 四阶段驱动，结合显式对话状态机。
 安全第一：规则层前置扫描红旗症状，不依赖 LLM 做紧急判断。
+
+Phase 3：Act 阶段改为 LLM 驱动的 Tool Use（ReAct 模式）。
+LLM 自主决定何时调用 search_symptom_kb，通过 ToolRuntime 执行，
+支持未来扩展多工具（药物库、检验指标等）而无需修改 Agent 主流程。
 """
 
 from __future__ import annotations
+
+import json
 
 from transformers import pipeline as hf_pipeline
 from openai import AsyncOpenAI
 
 from medi.core.context import DialogueState, UnifiedContext
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
+from medi.core.tool_runtime import ToolRuntime
 from medi.agents.triage.symptom_collector import SymptomInfo, build_follow_up_question
 from medi.agents.triage.urgency_evaluator import (
     UrgencyLevel,
@@ -19,6 +26,7 @@ from medi.agents.triage.urgency_evaluator import (
     EMERGENCY_RESPONSE,
 )
 from medi.agents.triage.department_router import DepartmentRouter
+from medi.agents.triage.tools import make_search_tool, SEARCH_SYMPTOM_KB_SCHEMA
 from medi.memory.episodic import EpisodicMemory
 
 TRIAGE_TOKEN_BUDGET = {
@@ -44,6 +52,9 @@ class TriageAgent:
         self._symptom_info = SymptomInfo()
         self._on_result = on_result  # Callable[[str], None]
         self._episodic = EpisodicMemory(ctx.user_id)
+        # ToolRuntime：注册 search_symptom_kb 工具
+        self._tool_runtime = ToolRuntime(ctx=ctx, bus=bus)
+        self._tool_runtime.register(make_search_tool(self._router))
         # NER 模型懒加载（首次调用时初始化，避免启动慢）
         self._ner = None
 
@@ -202,7 +213,13 @@ class TriageAgent:
         ))
 
     async def _act_search(self) -> None:
-        """Act 阶段：检索症状-科室知识库"""
+        """
+        Act 阶段：LLM 驱动的 Tool Use（ReAct 模式）。
+
+        LLM 收到症状摘要后，自主决定调用 search_symptom_kb 工具。
+        ToolRuntime 执行工具并返回结构化结果，LLM 拿到结果后进入 Observe。
+        最多循环 3 次（防止 LLM 无限 tool call），未调用工具则直接用空结果生成建议。
+        """
         self._ctx.transition(DialogueState.SEARCHING)
         await self._bus.emit(StreamEvent(
             type=EventType.STAGE_START,
@@ -210,8 +227,70 @@ class TriageAgent:
             session_id=self._ctx.session_id,
         ))
 
-        query = self._symptom_info.to_query_text()
-        candidates = await self._router.route(query)
+        symptom_summary = self._symptom_info.to_summary()
+        constraint_prompt = self._ctx.build_constraint_prompt()
+        history_prompt = await self._episodic.build_history_prompt()
+
+        system = f"""你是一位专业的分诊助手。请根据用户的症状信息，调用知识库检索工具获取科室建议。
+
+{constraint_prompt}
+{history_prompt}"""
+
+        # ReAct 循环的 messages（独立于 ctx.messages，不污染对话历史）
+        act_messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": (
+                    f"[当前症状摘要]\n{symptom_summary}\n\n"
+                    "请调用 search_symptom_kb 工具检索适合的科室。"
+                ),
+            },
+        ]
+
+        tool_result = None
+        for _ in range(3):  # 最多 3 次 tool call
+            response = await self._client.chat.completions.create(
+                model=self._ctx.model_config.fast,
+                max_tokens=TRIAGE_TOKEN_BUDGET["act"],
+                tools=[SEARCH_SYMPTOM_KB_SCHEMA],
+                tool_choice="auto",
+                messages=act_messages,
+            )
+
+            msg = response.choices[0].message
+
+            # LLM 没有调用工具，退出循环
+            if not msg.tool_calls:
+                break
+
+            # 执行所有 tool call（通常只有一个）
+            act_messages.append(msg)  # 把 assistant 消息加入循环 messages
+            for tc in msg.tool_calls:
+                args = json.loads(tc.function.arguments)
+                tool_result = await self._tool_runtime.call(
+                    tc.function.name, **args
+                )
+                # 把工具结果作为 tool 消息加入循环
+                act_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
+            break  # 拿到结果后退出，不做多轮检索
+
+        # 从 tool_result 重建 candidates 列表（供 _respond 使用）
+        candidates = []
+        if tool_result and "candidates" in tool_result:
+            from medi.agents.triage.department_router import DepartmentCandidate
+            candidates = [
+                DepartmentCandidate(
+                    department=c["department"],
+                    confidence=c["confidence"],
+                    reason=c["reason"],
+                )
+                for c in tool_result["candidates"]
+            ]
 
         await self._observe(candidates)
 
