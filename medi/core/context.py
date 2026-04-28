@@ -29,8 +29,8 @@ class DialogueState(Enum):
 
 @dataclass
 class ModelConfig:
-    fast: str = "claude-haiku-4-5-20251001"
-    smart: str = "claude-sonnet-4-6"
+    fast: str = "gpt-4o-mini"
+    smart: str = "gpt-4o"
 
 
 @dataclass

@@ -18,6 +18,7 @@ from rich.markdown import Markdown
 from medi.core.context import UnifiedContext, ModelConfig
 from medi.core.stream_bus import AsyncStreamBus, EventType
 from medi.agents.triage.agent import TriageAgent
+from medi.agents.triage.department_router import DepartmentRouter
 
 app = typer.Typer(name="medi", help="Medi 智能健康 Agent")
 console = Console()
@@ -32,23 +33,34 @@ async def _chat_loop(user_id: str) -> None:
         model_config=ModelConfig(),
         enabled_tools={"search_symptom_kb", "evaluate_urgency", "get_department_info"},
     )
+    router = DepartmentRouter()  # 懒加载，只初始化一次（bge 模型只加载一次）
     bus = AsyncStreamBus()
-    agent = TriageAgent(ctx=ctx, bus=bus)
+    agent = TriageAgent(ctx=ctx, bus=bus, router=router)
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的症状，输入 [bold]quit[/bold] 退出\n")
 
-    async def consume_events() -> None:
-        async for event in bus.stream():
-            if event.type == EventType.FOLLOW_UP:
-                console.print(f"\n[cyan]Medi:[/cyan] {event.data['question']}")
-            elif event.type == EventType.RESULT:
-                console.print("\n[cyan]Medi:[/cyan]")
-                console.print(Markdown(event.data["content"]))
-            elif event.type == EventType.ESCALATION:
-                console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
-            elif event.type == EventType.DONE:
-                break
+    async def handle_turn(user_input: str) -> None:
+        """处理一轮对话，每轮重建 bus，agent 复用（保留症状积累状态）"""
+        nonlocal bus
+        bus = AsyncStreamBus()
+        agent._bus = bus  # agent 复用，只换 bus
+
+        async def consume() -> None:
+            async for event in bus.stream():
+                if event.type == EventType.FOLLOW_UP:
+                    console.print(f"\n[cyan]Medi:[/cyan] {event.data['question']}")
+                elif event.type == EventType.RESULT:
+                    console.print("\n[cyan]Medi:[/cyan]")
+                    console.print(Markdown(event.data["content"]))
+                elif event.type == EventType.ESCALATION:
+                    console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
+
+        async def produce() -> None:
+            await agent.handle(user_input)
+            await bus.close()
+
+        await asyncio.gather(consume(), produce())
 
     while True:
         try:
@@ -61,13 +73,7 @@ async def _chat_loop(user_id: str) -> None:
         if not user_input:
             continue
 
-        event_task = asyncio.create_task(consume_events())
-        await agent.handle(user_input)
-        await bus.close()
-        await event_task
-
-        if ctx.dialogue_state.value == "done":
-            break
+        await handle_turn(user_input)
 
     console.print("\n[dim]会话结束[/dim]")
 
