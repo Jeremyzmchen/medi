@@ -280,9 +280,11 @@ class TriageAgent:
         # 把 assistant 回复追加进对话历史
         self._ctx.add_assistant_message(content)
         # 保存分诊记录到 EpisodicMemory
+        top_department = candidates[0].department if candidates else "待确认"
         await self._episodic.save(
             symptom_summary=symptom_summary,
             advice=content,
+            department=top_department,
         )
         # 通知 Orchestrator 记录本次建议，供 followup 使用
         if self._on_result:

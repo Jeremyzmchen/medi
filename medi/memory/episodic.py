@@ -24,15 +24,13 @@ class EpisodicMemory:
     def __init__(self, user_id: str) -> None:
         self._user_id = user_id
 
-    async def save(self, symptom_summary: str, advice: str) -> None:
+    async def save(self, symptom_summary: str, advice: str, department: str = "待确认") -> None:
         """
         保存一次分诊记录。
         symptom_summary — OPQRST 摘要（来自 SymptomInfo.to_summary()）
         advice          — TriageAgent 给出的完整建议文本
+        department      — 置信度最高的科室（来自 candidates[0].department）
         """
-        # 从建议文本中提取科室（取第一行提到的科室，兜底用"待确认"）
-        department = _extract_first_department(advice)
-
         record = VisitRecord(
             visit_date=datetime.now(),
             department=department,
@@ -81,21 +79,3 @@ class EpisodicMemory:
         return "\n".join(lines)
 
 
-def _extract_first_department(advice: str) -> str:
-    """
-    从建议文本中提取第一个科室名称。
-    建议格式通常为 "建议就诊科室：\n- 消化内科\n- 普外科..."
-    """
-    for line in advice.splitlines():
-        line = line.strip().lstrip("-•· ")
-        # 常见科室关键词
-        dept_keywords = [
-            "内科", "外科", "骨科", "神经", "心脏", "妇科", "儿科",
-            "耳鼻", "眼科", "皮肤", "急诊", "精神", "泌尿", "肿瘤",
-            "消化", "呼吸", "内分泌", "风湿", "血液", "感染",
-        ]
-        for kw in dept_keywords:
-            if kw in line and len(line) < 20:
-                return line.split("（")[0].split("：")[0].strip()
-
-    return "待确认"
