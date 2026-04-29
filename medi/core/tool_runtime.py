@@ -116,6 +116,17 @@ class ToolRuntime:
                         success=True,
                     ))
 
+                # 可观测性 trace
+                if self._ctx.observability is not None:
+                    from medi.core.observability import ToolTrace
+                    self._ctx.observability.record_tool(ToolTrace(
+                        session_id=self._ctx.session_id,
+                        timestamp=start,
+                        tool_name=tool_name,
+                        latency_ms=latency,
+                        success=True,
+                    ))
+
                 return result
 
             except Exception as e:
@@ -124,6 +135,18 @@ class ToolRuntime:
 
         # 所有重试耗尽
         latency = int((datetime.now() - start).total_seconds() * 1000)
+
+        # 可观测性 trace（失败）
+        if self._ctx.observability is not None:
+            from medi.core.observability import ToolTrace
+            self._ctx.observability.record_tool(ToolTrace(
+                session_id=self._ctx.session_id,
+                timestamp=start,
+                tool_name=tool_name,
+                latency_ms=latency,
+                success=False,
+                error_msg=str(last_error),
+            ))
 
         if tool.priority == ToolPriority.CRITICAL:
             self._audit_log.append(AuditRecord(
@@ -145,11 +168,9 @@ class ToolRuntime:
             raise RuntimeError(f"Critical tool '{tool_name}' failed: {last_error}")
 
         if tool.priority == ToolPriority.OPTIONAL:
-            # 静默跳过，不中断主流程
             logger.info(f"Optional tool '{tool_name}' failed, skipping silently")
             return None
 
-        # STANDARD 失败抛出
         raise RuntimeError(f"Tool '{tool_name}' failed after {max_retry} attempts: {last_error}")
 
     @property

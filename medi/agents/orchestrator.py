@@ -66,6 +66,7 @@ class OrchestratorAgent:
             chain=self._ctx.model_config.fast_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=[
                 {
                     "role": "system",
@@ -137,6 +138,7 @@ class OrchestratorAgent:
             chain=self._ctx.model_config.fast_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=[
                 {
                     "role": "system",
@@ -177,6 +179,7 @@ class OrchestratorAgent:
             chain=self._ctx.model_config.fast_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=[
                 {
                     "role": "system",

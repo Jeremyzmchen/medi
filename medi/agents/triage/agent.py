@@ -86,8 +86,25 @@ class TriageAgent:
         # 正常流程：TAOR 四阶段
         await self._think(user_input)
 
+    def _record_stage(self, stage: str, start: "datetime") -> None:
+        """向 ObservabilityStore 写入阶段耗时"""
+        if self._ctx.observability is None:
+            return
+        from datetime import datetime
+        from medi.core.observability import StageTrace
+        latency_ms = int((datetime.now() - start).total_seconds() * 1000)
+        self._ctx.observability.record_stage(StageTrace(
+            session_id=self._ctx.session_id,
+            timestamp=start,
+            stage=stage,
+            latency_ms=latency_ms,
+        ))
+
     async def _think(self, user_input: str) -> None:
         """Think 阶段：判断症状信息是否充分"""
+        from datetime import datetime
+        stage_start = datetime.now()
+
         self._ctx.transition(DialogueState.COLLECTING)
         await self._bus.emit(StreamEvent(
             type=EventType.STAGE_START,
@@ -100,6 +117,8 @@ class TriageAgent:
         # NER 未能提取到部位时，用 LLM 兜底推断
         if not self._symptom_info.region:
             await self._enrich_region(user_input)
+
+        self._record_stage("think", stage_start)
 
         if not self._symptom_info.is_sufficient() and self._ctx.can_follow_up():
             # 信息不足，进入追问
@@ -182,6 +201,7 @@ class TriageAgent:
             chain=self._ctx.model_config.fast_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=[
                 {
                     "role": "system",
@@ -223,6 +243,9 @@ class TriageAgent:
         ToolRuntime 执行工具并返回结构化结果，LLM 拿到结果后进入 Observe。
         最多循环 3 次（防止 LLM 无限 tool call），未调用工具则直接用空结果生成建议。
         """
+        from datetime import datetime
+        stage_start = datetime.now()
+
         self._ctx.transition(DialogueState.SEARCHING)
         await self._bus.emit(StreamEvent(
             type=EventType.STAGE_START,
@@ -257,6 +280,7 @@ class TriageAgent:
                 chain=self._ctx.model_config.fast_chain,
                 bus=self._bus,
                 session_id=self._ctx.session_id,
+                obs=self._ctx.observability,
                 messages=act_messages,
                 max_tokens=TRIAGE_TOKEN_BUDGET["act"],
                 tools=[SEARCH_SYMPTOM_KB_SCHEMA],
@@ -297,6 +321,7 @@ class TriageAgent:
                 for c in tool_result["candidates"]
             ]
 
+        self._record_stage("act", stage_start)
         await self._observe(candidates)
 
     async def _observe(self, candidates: list) -> None:
@@ -311,6 +336,9 @@ class TriageAgent:
 
     async def _respond(self, candidates: list) -> None:
         """Respond 阶段：生成最终建议，注入健康档案硬约束"""
+        from datetime import datetime
+        stage_start = datetime.now()
+
         self._ctx.transition(DialogueState.RESPONDING)
         await self._bus.emit(StreamEvent(
             type=EventType.STAGE_START,
@@ -353,10 +381,12 @@ class TriageAgent:
             chain=self._ctx.model_config.smart_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=messages,
             max_tokens=TRIAGE_TOKEN_BUDGET["respond"],
         )
 
+        self._record_stage("respond", stage_start)
         content = response.choices[0].message.content
         await self._bus.emit(StreamEvent(
             type=EventType.RESULT,

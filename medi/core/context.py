@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from medi.memory.health_profile import HealthProfile
     from medi.core.providers import LLMProvider
+    from medi.core.observability import ObservabilityStore
 
 
 class DialogueState(Enum):
@@ -69,6 +70,9 @@ class UnifiedContext:
 
     # 工具权限
     enabled_tools: set[str] = field(default_factory=set)
+
+    # 可观测性（每个 session 一个实例）
+    observability: ObservabilityStore | None = field(default=None)
 
     # 会话内对话历史（传给 LLM，保留完整上下文）
     messages: list[dict] = field(default_factory=list)

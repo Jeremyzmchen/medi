@@ -58,6 +58,7 @@ class MedicationAgent:
             chain=self._ctx.model_config.smart_chain,
             bus=self._bus,
             session_id=self._ctx.session_id,
+            obs=self._ctx.observability,
             messages=messages,
             max_tokens=600,
         )
