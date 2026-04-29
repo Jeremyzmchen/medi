@@ -11,6 +11,7 @@ OrchestratorAgent — 意图识别 + 子 Agent 路由
   new_symptom  — 全新的、与当前分诊无关的新主诉（分诊已完成后）
   medication   — 咨询药物、用量、副作用、药物冲突
   followup     — 追问对话中任何已有内容（科室位置、紧急程度、就诊流程等）
+  health_report — 用户上传或描述体检报告，需要解读 + 膳食 + 日程建议
   out_of_scope — 医院推荐、挂号、天气等超出范围的问题
 """
 
@@ -28,6 +29,7 @@ _INTENT_DESCRIPTIONS = {
     "new_symptom": "用户描述了与之前完全无关的新身体不适，或上一次分诊已完成后重新开始描述新症状",
     "medication": "用户在咨询药物名称、用药剂量、副作用、两种药能否同时吃等用药问题",
     "followup": "用户在追问对话中任何已有内容，包括科室位置、就诊流程、紧急程度含义、需要做什么检查等",
+    "health_report": "用户提供了体检报告内容（血糖、血脂、血压等指标）或要求解读体检报告，需要异常解读、膳食建议和日程安排",
     "out_of_scope": "用户问了超出医疗咨询范围的问题，例如推荐医院、如何挂号、天气、闲聊等",
 }
 
@@ -39,11 +41,12 @@ _OUT_OF_SCOPE_REPLY = (
 
 
 class Intent(Enum):
-    SYMPTOM      = "symptom"
-    NEW_SYMPTOM  = "new_symptom"
-    MEDICATION   = "medication"
-    FOLLOWUP     = "followup"
-    OUT_OF_SCOPE = "out_of_scope"
+    SYMPTOM       = "symptom"
+    NEW_SYMPTOM   = "new_symptom"
+    MEDICATION    = "medication"
+    FOLLOWUP      = "followup"
+    HEALTH_REPORT = "health_report"
+    OUT_OF_SCOPE  = "out_of_scope"
 
 
 class OrchestratorAgent:
