@@ -51,21 +51,15 @@ async def _collect_profile(user_id: str) -> HealthProfile:
 
     allergies_input = console.input("过敏史（如：青霉素、磺胺，多个用逗号分隔）：").strip()
     if allergies_input:
-        profile.allergies = [a.strip() for a in allergies_input.split("，") if a.strip()]
-        if not profile.allergies:
-            profile.allergies = [a.strip() for a in allergies_input.split(",") if a.strip()]
+        profile.allergies = [a.strip() for a in allergies_input.replace("，", ",").split(",") if a.strip()]
 
     chronic_input = console.input("慢性病史（如：高血压、糖尿病，多个用逗号分隔）：").strip()
     if chronic_input:
-        profile.chronic_conditions = [c.strip() for c in chronic_input.split("，") if c.strip()]
-        if not profile.chronic_conditions:
-            profile.chronic_conditions = [c.strip() for c in chronic_input.split(",") if c.strip()]
+        profile.chronic_conditions = [c.strip() for c in chronic_input.replace("，", ",").split(",") if c.strip()]
 
     meds_input = console.input("当前用药（如：二甲双胍，多个用逗号分隔）：").strip()
     if meds_input:
-        profile.current_medications = [m.strip() for m in meds_input.split("，") if m.strip()]
-        if not profile.current_medications:
-            profile.current_medications = [m.strip() for m in meds_input.split(",") if m.strip()]
+        profile.current_medications = [m.strip() for m in meds_input.replace("，", ",").split(",") if m.strip()]
 
     await save_profile(profile)
     console.print("\n[green]档案已保存[/green]")
