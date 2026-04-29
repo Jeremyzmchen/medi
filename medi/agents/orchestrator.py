@@ -2,9 +2,9 @@
 OrchestratorAgent — 意图识别 + 子 Agent 路由
 
 职责：
-  1. decompose_input()：检测混合输入，拆分为独立子问题
-  2. 对每个子问题做意图分类（gpt-4o-mini，轻量快速）
-  3. 根据意图路由到对应 Agent，或直接回复边界提示
+  1. 对用户输入做意图分类（gpt-4o-mini，轻量快速）
+  2. 根据意图路由到对应 Agent，或直接回复边界提示
+  3. 混合输入场景引导用户分步提问（不做拆分）
 
 意图类别（人工定义，LLM 做分类）：
   symptom      — 补充当前分诊过程中的症状信息（分诊进行中）
@@ -16,7 +16,6 @@ OrchestratorAgent — 意图识别 + 子 Agent 路由
 
 from __future__ import annotations
 
-import json
 from enum import Enum
 
 from medi.core.context import DialogueState, UnifiedContext
@@ -52,51 +51,6 @@ class OrchestratorAgent:
         self._ctx = ctx
         self._bus = bus
         self._last_response: str = ""   # 上一次给出的建议，供 followup 时作上下文
-
-    async def decompose_input(self, user_input: str) -> list[str]:
-        """
-        检测用户输入是否包含多个独立问题，拆分为子问题列表。
-        单一问题返回 [user_input]，混合输入返回拆分后的列表。
-
-        例：
-          "我发烧，布洛芬和阿司匹林能一起吃吗"
-          → ["我发烧", "布洛芬和阿司匹林能一起吃吗"]
-        """
-        response = await call_with_fallback(
-            chain=self._ctx.model_config.fast_chain,
-            bus=self._bus,
-            session_id=self._ctx.session_id,
-            obs=self._ctx.observability,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个医疗对话分析器。判断用户输入是否包含多个独立的问题（症状描述、用药咨询等）。\n"
-                        "如果是单一问题，返回：{\"questions\": [\"原文\"]}\n"
-                        "如果包含多个独立问题，拆分后返回：{\"questions\": [\"问题1\", \"问题2\"]}\n"
-                        "只输出 JSON，不要输出其他内容。"
-                    ),
-                },
-                {"role": "user", "content": user_input},
-            ],
-            max_tokens=150,
-            temperature=0,
-        )
-
-        raw = response.choices[0].message.content.strip()
-        try:
-            # 容错：去掉可能的 markdown 代码块
-            raw = raw.strip("` \n")
-            if raw.startswith("json"):
-                raw = raw[4:]
-            data = json.loads(raw)
-            questions = data.get("questions", [])
-            if isinstance(questions, list) and all(isinstance(q, str) for q in questions):
-                return questions if questions else [user_input]
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-        return [user_input]
 
     async def classify_intent(
         self,

@@ -138,24 +138,21 @@ async def _chat_loop(user_id: str) -> None:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            sub_questions = await orchestrator.decompose_input(user_input)
+            symptom_summary = agent._symptom_info.to_summary()
+            intent = await orchestrator.classify_intent(user_input, symptom_summary)
 
-            for question in sub_questions:
-                symptom_summary = agent._symptom_info.to_summary()
-                intent = await orchestrator.classify_intent(question, symptom_summary)
-
-                if intent == Intent.OUT_OF_SCOPE:
-                    await orchestrator.handle_out_of_scope()
-                elif intent == Intent.FOLLOWUP:
-                    await orchestrator.handle_followup(question)
-                elif intent == Intent.NEW_SYMPTOM:
-                    ctx.messages.clear()
-                    agent._symptom_info = SymptomInfo()
-                    await agent.handle(question)
-                elif intent == Intent.MEDICATION:
-                    await medication_agent.handle(question)
-                else:
-                    await agent.handle(question)
+            if intent == Intent.OUT_OF_SCOPE:
+                await orchestrator.handle_out_of_scope()
+            elif intent == Intent.FOLLOWUP:
+                await orchestrator.handle_followup(user_input)
+            elif intent == Intent.NEW_SYMPTOM:
+                ctx.messages.clear()
+                agent._symptom_info = SymptomInfo()
+                await agent.handle(user_input)
+            elif intent == Intent.MEDICATION:
+                await medication_agent.handle(user_input)
+            else:
+                await agent.handle(user_input)
 
             await bus.close()
 
