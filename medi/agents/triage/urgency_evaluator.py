@@ -27,6 +27,7 @@ class UrgencyLevel(Enum):
 
 
 # 红旗关键词 -> 触发 EMERGENCY，规则层直接返回，不走 LLM
+# 在act -> observe 阶段间还有一层llm根据收集的信息判断紧急情况
 _RED_FLAG_KEYWORDS: list[str] = [
     "胸痛", "胸闷", "心痛",
     "呼吸困难", "喘不过气", "憋气", "呼吸急促",
@@ -44,6 +45,56 @@ class UrgencyResult:
     triggered_by_rule: bool   # True = 规则层触发，False = LLM 判断
 
 
+async def evaluate_urgency_by_llm(
+    symptom_text: str,
+    call_with_fallback,
+    fast_chain,
+    bus,
+    session_id: str,
+    obs=None,
+) -> UrgencyResult:
+    """
+    LLM 层紧急程度评估，规则层未命中时调用。
+    只判断 urgent / normal / watchful 三级（emergency 已由规则层拦截）。
+    """
+    response = await call_with_fallback(
+        chain=fast_chain,
+        bus=bus,
+        session_id=session_id,
+        obs=obs,
+        call_type="evaluate_urgency",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你是一位急诊分诊护士。根据患者症状判断就医紧急程度，"
+                    "只输出以下三个等级之一，不要输出其他内容：\n"
+                    "urgent（尽快就医，当天内）\n"
+                    "normal（近期就医，3天内）\n"
+                    "watchful（可先观察，症状加重再就医）"
+                ),
+            },
+            {"role": "user", "content": symptom_text},
+        ],
+        max_tokens=10,
+        temperature=0,
+    )
+
+    raw = response.choices[0].message.content.strip().lower()
+
+    if "urgent" in raw:
+        level = UrgencyLevel.URGENT
+        reason = "LLM 评估为较急，建议当天就医"
+    elif "watchful" in raw:
+        level = UrgencyLevel.WATCHFUL
+        reason = "LLM 评估可先观察，症状加重再就医"
+    else:
+        level = UrgencyLevel.NORMAL
+        reason = "LLM 评估为普通，建议近期就医"
+
+    return UrgencyResult(level=level, reason=reason, triggered_by_rule=False)
+
+
 def evaluate_urgency_by_rules(symptom_text: str) -> UrgencyResult | None:
     """
     规则层前置扫描。
@@ -59,7 +110,7 @@ def evaluate_urgency_by_rules(symptom_text: str) -> UrgencyResult | None:
             )
     return None
 
-
+# TODO: 后续增加其他呼救报警模块
 EMERGENCY_RESPONSE = (
     "您描述的症状可能存在紧急情况，请立即拨打 120 或前往最近医院急诊。\n"
     "在等待救援期间，请保持平卧、不要独自行动。"

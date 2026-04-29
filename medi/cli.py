@@ -14,6 +14,9 @@ import asyncio
 import uuid
 from typing import Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -77,11 +80,13 @@ async def _chat_loop(user_id: str) -> None:
     elif profile.is_complete():
         console.print(f"\n[dim]已加载健康档案：{profile.gender}，{profile.age}岁[/dim]")
 
+    # 初始化可观测集，统一上下文，各个agent
     obs = ObservabilityStore()
     ctx = UnifiedContext(
         user_id=user_id,
         session_id=session_id,
         model_config=ModelConfig(),
+        # ToolRuntime 校验工具可用
         enabled_tools={"search_symptom_kb", "evaluate_urgency", "get_department_info"},
         health_profile=profile,
         observability=obs,
@@ -89,11 +94,10 @@ async def _chat_loop(user_id: str) -> None:
     router = DepartmentRouter()
     bus = AsyncStreamBus()
     orchestrator = OrchestratorAgent(ctx=ctx, bus=bus)
-    agent = TriageAgent(
+    triage_agent = TriageAgent(
         ctx=ctx,
         bus=bus,
         router=router,
-        on_result=orchestrator.update_last_response,
     )
     medication_agent = MedicationAgent(ctx=ctx, bus=bus)
     health_report_agent = HealthReportAgent(ctx=ctx, bus=bus)
@@ -101,10 +105,10 @@ async def _chat_loop(user_id: str) -> None:
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的症状，输入 [bold]quit[/bold] 退出")
 
-    # 展示最近就诊记录
+    # 非游客就展示最近就诊记录
     if user_id != "guest":
         episodic = EpisodicMemory(user_id)
-        recent = await episodic.recent(limit=3)
+        recent = await episodic.recent(limit=5)
         if recent:
             console.print("\n[dim]最近就诊记录：[/dim]")
             for r in recent:
@@ -117,15 +121,17 @@ async def _chat_loop(user_id: str) -> None:
     console.print()
 
     async def handle_turn(user_input: str) -> None:
+        # 注入异步信息
         nonlocal bus
         bus = AsyncStreamBus()
-        agent._bus = bus
+        triage_agent._bus = bus
         orchestrator._bus = bus
         medication_agent._bus = bus
         health_report_agent._bus = bus
         health_report_agent._diet_agent._bus = bus
         health_report_agent._schedule_agent._bus = bus
 
+        # 控制台消费（打印）
         async def consume() -> None:
             async for event in bus.stream():
                 if event.type == EventType.FOLLOW_UP:
@@ -137,7 +143,9 @@ async def _chat_loop(user_id: str) -> None:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            symptom_summary = agent._symptom_info.to_summary()
+            # OPQRST六维模型信息
+            symptom_summary = triage_agent._symptom_info.to_summary()
+            # 意图分类
             intent = await orchestrator.classify_intent(user_input, symptom_summary)
 
             if intent == Intent.OUT_OF_SCOPE:
@@ -146,17 +154,18 @@ async def _chat_loop(user_id: str) -> None:
                 await orchestrator.handle_followup(user_input)
             elif intent == Intent.NEW_SYMPTOM:
                 ctx.messages.clear()
-                agent._symptom_info = SymptomInfo()
-                await agent.handle(user_input)
+                triage_agent._symptom_info = SymptomInfo()
+                await triage_agent.handle(user_input)
             elif intent == Intent.MEDICATION:
                 await medication_agent.handle(user_input)
             elif intent == Intent.HEALTH_REPORT:
                 await health_report_agent.handle(user_input)
             else:
-                await agent.handle(user_input)
+                await triage_agent.handle(user_input)
 
             await bus.close()
 
+        # 并发处理生产者消费者
         await asyncio.gather(consume(), produce())
 
         # 每轮结束后 flush trace 到 SQLite
@@ -164,7 +173,7 @@ async def _chat_loop(user_id: str) -> None:
 
     while True:
         try:
-            user_input = console.input("\n[bold]您:[/bold] ").strip()
+            user_input = console.input(f"\n[bold]{user_id}:[/bold] ").strip()
         except (EOFError, KeyboardInterrupt):
             break
 

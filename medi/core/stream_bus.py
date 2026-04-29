@@ -1,8 +1,7 @@
 """
 AsyncStreamBus — 异步事件总线
 
-与 Weave 的 AsyncStreamBus 基本一致，
-增加了 ESCALATION 事件类型用于红旗症状升级通知。
+ESCALATION 事件类型用于红旗症状升级通知。
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ class AsyncStreamBus:
     """
 
     def __init__(self) -> None:
+        # list: 不同消费者有自己独立的队列, 目前只有cli一个消费者
         self._queues: list[asyncio.Queue[StreamEvent | None]] = []
 
     def _make_queue(self) -> asyncio.Queue[StreamEvent | None]:
@@ -54,6 +54,7 @@ class AsyncStreamBus:
             await q.put(event)
 
     async def stream(self) -> AsyncIterator[StreamEvent]:
+        # 消费时分配一个独立队列，同时注册到queues
         q = self._make_queue()
         try:
             while True:

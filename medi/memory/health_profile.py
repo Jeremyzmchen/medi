@@ -18,6 +18,7 @@ from pathlib import Path
 
 import aiosqlite
 
+# C:\...\health\medi\medi\memory\health_profile.py
 DB_PATH = Path(__file__).parents[3] / "data" / "medi.db"
 
 
@@ -33,11 +34,11 @@ class VisitRecord:
 class HealthProfile:
     user_id: str
     age: int | None = None
-    gender: str | None = None                                        # "男" / "女"
+    gender: str | None = None                                       # "男" / "女"
     chronic_conditions: list[str] = field(default_factory=list)     # 慢性病史
     allergies: list[str] = field(default_factory=list)              # 过敏史
     current_medications: list[str] = field(default_factory=list)    # 当前用药
-    visit_history: list[VisitRecord] = field(default_factory=list)  # 就诊记录
+    visit_history: list[VisitRecord] = field(default_factory=list)  # 分诊记录
 
     def is_complete(self) -> bool:
         """判断基本信息是否已填写（年龄和性别是最低要求）"""

@@ -5,7 +5,7 @@
 Medi 是一个面向中文用户的智能健康 Agent 系统，核心目标：
 
 - **学习向**：系统覆盖 Agent 开发的关键技术点（记忆、Tool Calling、Multi-Agent 协同、模型路由）
-- **面试向**：对标京东健康等大厂健康 AI 岗位，可作为项目经历完整展示
+- **面试向**：对标大厂健康 AI 岗位，可作为项目经历完整展示
 
 **Phase 1 目标**：实现智能分诊 Agent（TriageAgent），用户描述症状后引导问询，输出科室建议和紧急程度评估。
 
@@ -116,7 +116,7 @@ Respond：
 - `cMedQA2` — 中文医疗问答，含症状-回答对
 
 **使用策略**：
-- 不做模型微调（成本高），用数据构建向量知识库
+- 暂不做模型微调，用数据构建向量知识库
 - 用 `shibing624/medical` + `LCMDC` 构建症状-科室向量索引
 - 向量模型：`BAAI/bge-large-zh-v1.5`（中文 embedding 效果最好）
 
@@ -202,7 +202,6 @@ class ToolPriority(Enum):
 
 ### 6.3 ToolRuntime 设计
 
-继承 Weave 的 ToolRuntime 模式，增加健康场景特有的：
 - **审计日志**：所有 CRITICAL 工具调用必须记录（时间、入参、出参）
 - **超时分级**：CRITICAL 工具超时 10s，STANDARD 5s，OPTIONAL 3s
 - **降级策略**：OPTIONAL 工具失败不中断主流程
@@ -215,7 +214,7 @@ class ToolPriority(Enum):
 MODEL_ROUTING = {
     "intent_classification": "claude-haiku-4-5",   # 意图识别，高频低延迟
     "symptom_analysis":      "claude-sonnet-4-6",  # 症状分析，准确性优先
-    "urgency_evaluation":    "rule_based",          # 紧急评估，规则层优先
+    "urgency_evaluation":    "rule_based",         # 紧急评估，规则层优先
     "response_generation":   "claude-sonnet-4-6",  # 最终建议生成
     "memory_distill":        "claude-haiku-4-5",   # 记忆蒸馏，成本敏感
 }
@@ -387,15 +386,15 @@ Weave 的工具调用只需正确执行，失败了重试即可。
 ```python
 @dataclass
 class AuditRecord:
-    session_id: str
-    timestamp: datetime
-    tool_name: str
-    priority: ToolPriority
-    input_params: dict
-    output_result: dict
-    latency_ms: int
-    success: bool
-    error_msg: str | None
+    session_id: str            # 会话ID
+    timestamp: datetime        # 时间戳
+    tool_name: str             # 工具名称
+    priority: ToolPriority     # 工具优先级
+    input_params: dict         # 工具调用参数
+    output_result: dict        # 输出结果
+    latency_ms: int            # 耗时
+    success: bool              # 是否成功
+    error_msg: str | None      # 异常信息
 
 # CRITICAL 级别工具调用自动写入审计表，不可关闭
 # 审计记录用于事后溯源：哪次问诊查了什么药、返回了什么结果

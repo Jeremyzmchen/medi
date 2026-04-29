@@ -37,25 +37,7 @@ class SymptomInfo:
     severity: str | None = None        # S - 严重程度（0-10）
     time_pattern: str | None = None    # T - 时间特征（持续/间歇，多久）
 
-    # 向后兼容：部分代码用 location / duration / accompanying / nature
-    @property
-    def location(self) -> str | None:
-        return self.region
-
-    @location.setter
-    def location(self, v: str | None) -> None:
-        self.region = v
-
-    @property
-    def duration(self) -> str | None:
-        return self.time_pattern
-
-    @duration.setter
-    def duration(self, v: str | None) -> None:
-        self.time_pattern = v
-
     accompanying: list[str] = field(default_factory=list)   # 伴随症状（NER 提取）
-    nature: str | None = None          # 症状性质补充（NER 提取）
 
     def is_sufficient(self) -> bool:
         """

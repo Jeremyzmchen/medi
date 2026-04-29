@@ -1,7 +1,7 @@
 """
 UnifiedContext — 贯穿所有模块的共享上下文
 
-与 Weave 的 UnifiedContext 的区别：
+与 Weave 项目 的 UnifiedContext 的区别：
 - 增加 HealthProfile 作为硬约束字段
 - 增加 DialogueState 跟踪对话状态机
 """
@@ -53,7 +53,7 @@ class UnifiedContext:
     所有模块共享的上下文，不逐层传参。
 
     health_profile 作为硬约束注入每次 LLM 调用，
-    区别于 Weave 中记忆的软约束（洞察）语义。
+    区别于 Weave 项目 中记忆的软约束（洞察）语义。
     """
     user_id: str
     session_id: str
@@ -98,7 +98,7 @@ class UnifiedContext:
     def build_constraint_prompt(self) -> str:
         """
         将健康档案转为硬约束 prompt 片段，注入 system prompt。
-        Weave 的记忆是软约束（供参考），这里是强制约束（必须遵守）。
+        Weave 项目 的记忆是软约束（供参考），这里是强制约束（必须遵守）。
         """
         if self.health_profile is None:
             return ""

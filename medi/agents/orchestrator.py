@@ -30,7 +30,7 @@ _INTENT_DESCRIPTIONS = {
     "medication": "用户在咨询药物名称、用药剂量、副作用、两种药能否同时吃等用药问题",
     "followup": "用户在追问对话中任何已有内容，包括科室位置、就诊流程、紧急程度含义、需要做什么检查等",
     "health_report": "用户提供了体检报告内容（血糖、血脂、血压等指标）或要求解读体检报告，需要异常解读、膳食建议和日程安排",
-    "out_of_scope": "用户问了超出医疗咨询范围的问题，例如推荐医院、如何挂号、天气、闲聊等",
+    "out_of_scope": "用户问了超出医疗咨询范围的问题，例如推荐医院、如何挂号、天气等。注意：简单问候（你好、您好、hi、hello）不属于此类，应归为 followup",
 }
 
 _OUT_OF_SCOPE_REPLY = (
@@ -53,7 +53,6 @@ class OrchestratorAgent:
     def __init__(self, ctx: UnifiedContext, bus: AsyncStreamBus) -> None:
         self._ctx = ctx
         self._bus = bus
-        self._last_response: str = ""   # 上一次给出的建议，供 followup 时作上下文
 
     async def classify_intent(
         self,
@@ -111,13 +110,14 @@ class OrchestratorAgent:
                 },
                 {"role": "user", "content": user_input},
             ],
+            # 控制字数，防止模型幻觉瞎输出
             max_tokens=15,
             temperature=0,
         )
 
         raw = response.choices[0].message.content.strip().lower()
 
-        # 容错：LLM 输出可能带标点或多余空格
+        # 校验意图分类回应
         for intent in Intent:
             if intent.value in raw:
                 return intent
@@ -127,8 +127,15 @@ class OrchestratorAgent:
 
     async def handle_followup(self, user_input: str) -> None:
         """处理对上一条建议的追问，带完整对话历史回答"""
+
+        # cli消费
         if not self._ctx.messages:
-            # 没有对话历史，当新症状处理（不应发生）
+            greeting = "您好！我是 Medi 分诊助手，请描述您的症状，我来帮您判断应就诊的科室和紧急程度。"
+            await self._bus.emit(StreamEvent(
+                type=EventType.RESULT,
+                data={"content": greeting},
+                session_id=self._ctx.session_id,
+            ))
             return
 
         self._ctx.add_user_message(user_input)
@@ -166,6 +173,3 @@ class OrchestratorAgent:
             session_id=self._ctx.session_id,
         ))
 
-    def update_last_response(self, content: str) -> None:
-        """TriageAgent 给出建议后，记录到 Orchestrator 供 followup 使用"""
-        self._last_response = content

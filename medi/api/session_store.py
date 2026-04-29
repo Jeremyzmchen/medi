@@ -75,7 +75,6 @@ async def get_or_create_session(session_id: str | None, user_id: str) -> Session
         ctx=ctx,
         bus=bus,
         router=_router,
-        on_result=orchestrator.update_last_response,
     )
     medication_agent = MedicationAgent(ctx=ctx, bus=bus)
     health_report_agent = HealthReportAgent(ctx=ctx, bus=bus)

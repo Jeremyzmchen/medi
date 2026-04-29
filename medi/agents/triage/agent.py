@@ -27,7 +27,7 @@ from medi.agents.triage.urgency_evaluator import (
     EMERGENCY_RESPONSE,
 )
 from medi.agents.triage.department_router import DepartmentRouter
-from medi.agents.triage.tools import make_search_tool, SEARCH_SYMPTOM_KB_SCHEMA
+from medi.agents.triage.tools import make_search_tool, make_urgency_tool, SEARCH_SYMPTOM_KB_SCHEMA
 from medi.memory.episodic import EpisodicMemory
 
 TRIAGE_TOKEN_BUDGET = {
@@ -44,18 +44,23 @@ class TriageAgent:
         ctx: UnifiedContext,
         bus: AsyncStreamBus,
         router: DepartmentRouter | None = None,
-        on_result=None,  # 回调：建议生成后通知 Orchestrator
     ) -> None:
         self._ctx = ctx
         self._bus = bus
         self._router = router or DepartmentRouter()
         self._client = AsyncOpenAI()
         self._symptom_info = SymptomInfo()
-        self._on_result = on_result  # Callable[[str], None]
         self._episodic = EpisodicMemory(ctx.user_id)
         # ToolRuntime：注册 search_symptom_kb 工具
         self._tool_runtime = ToolRuntime(ctx=ctx, bus=bus)
         self._tool_runtime.register(make_search_tool(self._router))
+        self._tool_runtime.register(make_urgency_tool(
+            call_with_fallback=call_with_fallback,
+            fast_chain=ctx.model_config.fast_chain,
+            bus=bus,
+            session_id=ctx.session_id,
+            obs=ctx.observability,
+        ))
         # NER 模型懒加载（首次调用时初始化，避免启动慢）
         self._ner = None
 
@@ -327,16 +332,43 @@ class TriageAgent:
         await self._observe(candidates)
 
     async def _observe(self, candidates: list) -> None:
-        """Observe 阶段：评估检索结果"""
+        """
+        Observe 阶段：拿到 Act 检索结果后，调 evaluate_urgency 工具做 LLM 紧急程度评估。
+
+        放在此阶段的原因：
+        - Think 阶段症状信息可能还不完整（追问未结束）
+        - Act 阶段职责是"调工具查科室"，不应混入紧急评估
+        - Observe 语义是"拿到 Act 结果后分析判断"，职责最匹配
+        - Respond 阶段只做生成，不做判断
+
+        evaluate_urgency 是规则层（红旗关键词）的第二层兜底，
+        处理规则层未覆盖的语义场景（如"拉了很多血"）。
+        工具失败不阻断主流程，_respond 用 None 降级处理。
+        """
+        from datetime import datetime
+        stage_start = datetime.now()
+
         await self._bus.emit(StreamEvent(
             type=EventType.STAGE_START,
             data={"stage": "observe"},
             session_id=self._ctx.session_id,
         ))
 
-        await self._respond(candidates)
+        # 调用 evaluate_urgency 工具做 LLM 紧急程度评估
+        urgency_result = None
+        try:
+            symptom_text = self._symptom_info.to_summary()
+            urgency_result = await self._tool_runtime.call(
+                "evaluate_urgency",
+                symptom_text=symptom_text,
+            )
+        except Exception:
+            pass  # 工具失败不阻断主流程，_respond 用 None 降级处理
 
-    async def _respond(self, candidates: list) -> None:
+        self._record_stage("observe", stage_start)
+        await self._respond(candidates, urgency_result)
+
+    async def _respond(self, candidates: list, urgency_result: dict | None = None) -> None:
         """Respond 阶段：生成最终建议，注入健康档案硬约束"""
         from datetime import datetime
         stage_start = datetime.now()
@@ -363,10 +395,16 @@ class TriageAgent:
 {constraint_prompt}
 {history_prompt}"""
 
+        # 注入 LLM 紧急程度评估结果（第二层兜底）
+        urgency_hint = ""
+        if urgency_result:
+            urgency_hint = f"\n[紧急程度评估]\n{urgency_result['reason']}（等级：{urgency_result['level']}）\n"
+
         # 在完整对话历史后追加结构化症状摘要 + 知识库检索结果
         retrieval_note = (
             f"[OPQRST 症状摘要]\n{symptom_summary}\n\n"
-            f"[知识库检索结果]\n{dept_list}\n\n"
+            f"[知识库检索结果]\n{dept_list}\n"
+            f"{urgency_hint}\n"
             "请基于以上信息和完整对话历史给出：\n"
             "1. 建议就诊科室（优先级排序）\n"
             "2. 紧急程度（紧急/较急/普通/可观察）\n"
@@ -405,9 +443,6 @@ class TriageAgent:
             advice=content,
             department=top_department,
         )
-        # 通知 Orchestrator 记录本次建议，供 followup 使用
-        if self._on_result:
-            self._on_result(content)
         # 重置状态机和追问计数，但保留 symptom_info 积累（同一会话内）
         self._ctx.transition(DialogueState.INIT)
         self._ctx.follow_up_count = 0
