@@ -27,6 +27,7 @@ class LLMTrace:
     session_id: str
     timestamp: datetime
     provider: str           # e.g. "openai/gpt-4o"
+    call_type: str          # intent_classify / enrich_region / follow_up / act_search / respond / medication / followup_answer / decompose
     is_fallback: bool       # 是否是降级后的调用
     prompt_tokens: int
     completion_tokens: int
@@ -160,6 +161,7 @@ async def _ensure_tables(db: aiosqlite.Connection) -> None:
             session_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             provider TEXT NOT NULL,
+            call_type TEXT NOT NULL DEFAULT '',
             is_fallback INTEGER NOT NULL,
             prompt_tokens INTEGER NOT NULL,
             completion_tokens INTEGER NOT NULL,
@@ -191,14 +193,15 @@ async def _ensure_tables(db: aiosqlite.Connection) -> None:
 async def _insert_llm_traces(db: aiosqlite.Connection, traces: list[LLMTrace]) -> None:
     await db.executemany("""
         INSERT INTO llm_traces
-            (session_id, timestamp, provider, is_fallback, prompt_tokens,
+            (session_id, timestamp, provider, call_type, is_fallback, prompt_tokens,
              completion_tokens, latency_ms, success, error_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (
             t.session_id,
             t.timestamp.isoformat(),
             t.provider,
+            t.call_type,
             int(t.is_fallback),
             t.prompt_tokens,
             t.completion_tokens,

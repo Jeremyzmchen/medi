@@ -228,6 +228,7 @@ def _print_session_detail(session_id: str, detail: dict) -> None:
 
     if detail["llm_calls"]:
         table = Table(title="LLM 调用记录")
+        table.add_column("调用类型")
         table.add_column("供应商")
         table.add_column("降级", justify="center")
         table.add_column("Prompt Token", justify="right")
@@ -236,6 +237,7 @@ def _print_session_detail(session_id: str, detail: dict) -> None:
         table.add_column("成功", justify="center")
         for c in detail["llm_calls"]:
             table.add_row(
+                c.get("call_type", "-"),
                 c["provider"],
                 "Y" if c["is_fallback"] else "-",
                 str(c["prompt_tokens"]),

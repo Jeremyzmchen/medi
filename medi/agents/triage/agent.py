@@ -202,6 +202,7 @@ class TriageAgent:
             bus=self._bus,
             session_id=self._ctx.session_id,
             obs=self._ctx.observability,
+            call_type="enrich_region",
             messages=[
                 {
                     "role": "system",
@@ -281,6 +282,7 @@ class TriageAgent:
                 bus=self._bus,
                 session_id=self._ctx.session_id,
                 obs=self._ctx.observability,
+                call_type="act_search",
                 messages=act_messages,
                 max_tokens=TRIAGE_TOKEN_BUDGET["act"],
                 tools=[SEARCH_SYMPTOM_KB_SCHEMA],
@@ -382,6 +384,7 @@ class TriageAgent:
             bus=self._bus,
             session_id=self._ctx.session_id,
             obs=self._ctx.observability,
+            call_type="respond",
             messages=messages,
             max_tokens=TRIAGE_TOKEN_BUDGET["respond"],
         )

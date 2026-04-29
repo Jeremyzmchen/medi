@@ -59,6 +59,7 @@ class MedicationAgent:
             bus=self._bus,
             session_id=self._ctx.session_id,
             obs=self._ctx.observability,
+            call_type="medication",
             messages=messages,
             max_tokens=600,
         )

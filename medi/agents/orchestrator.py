@@ -93,6 +93,7 @@ class OrchestratorAgent:
             bus=self._bus,
             session_id=self._ctx.session_id,
             obs=self._ctx.observability,
+            call_type="intent_classify",
             messages=[
                 {
                     "role": "system",
@@ -134,6 +135,7 @@ class OrchestratorAgent:
             bus=self._bus,
             session_id=self._ctx.session_id,
             obs=self._ctx.observability,
+            call_type="followup_answer",
             messages=[
                 {
                     "role": "system",

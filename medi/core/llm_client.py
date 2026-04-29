@@ -41,7 +41,8 @@ async def call_with_fallback(
     session_id: str,
     messages: list[dict],
     max_tokens: int,
-    obs=None,       # ObservabilityStore | None
+    obs=None,           # ObservabilityStore | None
+    call_type: str = "unknown",
     **kwargs,
 ):
     """
@@ -86,6 +87,7 @@ async def call_with_fallback(
                     session_id=session_id,
                     timestamp=start,
                     provider=provider.name,
+                    call_type=call_type,
                     is_fallback=is_fallback,
                     prompt_tokens=usage.prompt_tokens if usage else 0,
                     completion_tokens=usage.completion_tokens if usage else 0,
@@ -104,6 +106,7 @@ async def call_with_fallback(
                     session_id=session_id,
                     timestamp=start,
                     provider=provider.name,
+                    call_type=call_type,
                     is_fallback=is_fallback,
                     prompt_tokens=0,
                     completion_tokens=0,
