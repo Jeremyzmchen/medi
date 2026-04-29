@@ -27,6 +27,7 @@ from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent, Intent
 from medi.agents.triage.symptom_collector import SymptomInfo
 from medi.agents.medication.agent import MedicationAgent
+from medi.agents.health_report.agent import HealthReportAgent
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
 from medi.memory.episodic import EpisodicMemory
 
@@ -101,6 +102,7 @@ async def _chat_loop(user_id: str) -> None:
         on_result=orchestrator.update_last_response,
     )
     medication_agent = MedicationAgent(ctx=ctx, bus=bus)
+    health_report_agent = HealthReportAgent(ctx=ctx, bus=bus)
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的症状，输入 [bold]quit[/bold] 退出")
@@ -126,6 +128,9 @@ async def _chat_loop(user_id: str) -> None:
         agent._bus = bus
         orchestrator._bus = bus
         medication_agent._bus = bus
+        health_report_agent._bus = bus
+        health_report_agent._diet_agent._bus = bus
+        health_report_agent._schedule_agent._bus = bus
 
         async def consume() -> None:
             async for event in bus.stream():
@@ -151,6 +156,8 @@ async def _chat_loop(user_id: str) -> None:
                 await agent.handle(user_input)
             elif intent == Intent.MEDICATION:
                 await medication_agent.handle(user_input)
+            elif intent == Intent.HEALTH_REPORT:
+                await health_report_agent.handle(user_input)
             else:
                 await agent.handle(user_input)
 
@@ -277,6 +284,29 @@ def observe(
 ) -> None:
     """查看可观测性数据（LLM 调用、工具调用、阶段耗时）"""
     asyncio.run(_show_observe(session))
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", help="监听地址"),
+    port: int = typer.Option(8000, "--port", "-p", help="监听端口"),
+    reload: bool = typer.Option(False, "--reload", help="开发模式：代码变更自动重载"),
+) -> None:
+    """启动 FastAPI HTTP 服务（支持 SSE 流式对话）"""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]缺少 uvicorn，请运行：pip install uvicorn[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold green]Medi API[/bold green] 启动于 http://{host}:{port}")
+    console.print(f"[dim]文档：http://{host}:{port}/docs[/dim]")
+    uvicorn.run(
+        "medi.api.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
 
 
 if __name__ == "__main__":
