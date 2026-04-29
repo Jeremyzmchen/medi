@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from medi.memory.health_profile import HealthProfile
+    from medi.core.providers import LLMProvider
 
 
 class DialogueState(Enum):
@@ -29,8 +30,20 @@ class DialogueState(Enum):
 
 @dataclass
 class ModelConfig:
+    # 模型名（供日志/显示用，实际调用走 provider chain）
     fast: str = "gpt-4o-mini"
     smart: str = "gpt-4o"
+    # 跨供应商降级链（运行时由 build_smart/fast_chain() 填充）
+    smart_chain: list[LLMProvider] = field(default_factory=list)
+    fast_chain: list[LLMProvider] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # 延迟导入避免循环依赖
+        from medi.core.providers import build_smart_chain, build_fast_chain
+        if not self.smart_chain:
+            self.smart_chain = build_smart_chain()
+        if not self.fast_chain:
+            self.fast_chain = build_fast_chain()
 
 
 @dataclass

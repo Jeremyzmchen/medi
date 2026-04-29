@@ -19,6 +19,7 @@ from openai import AsyncOpenAI
 from medi.core.context import DialogueState, UnifiedContext
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
 from medi.core.tool_runtime import ToolRuntime
+from medi.core.llm_client import call_with_fallback
 from medi.agents.triage.symptom_collector import SymptomInfo, build_follow_up_question
 from medi.agents.triage.urgency_evaluator import (
     UrgencyLevel,
@@ -177,10 +178,10 @@ class TriageAgent:
         例："腹泻" → "腹部"，"头晕" → "头部"，"咳嗽" → "胸/呼吸道"
         输出"未知"时不写入，让后续追问来补。
         """
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.fast,
-            max_tokens=10,
-            temperature=0,
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.fast_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=[
                 {
                     "role": "system",
@@ -191,6 +192,8 @@ class TriageAgent:
                 },
                 {"role": "user", "content": text},
             ],
+            max_tokens=10,
+            temperature=0,
         )
         result = response.choices[0].message.content.strip()
         if result and result != "未知" and result != "'未知'":
@@ -250,12 +253,14 @@ class TriageAgent:
 
         tool_result = None
         for _ in range(3):  # 最多 3 次 tool call
-            response = await self._client.chat.completions.create(
-                model=self._ctx.model_config.fast,
+            response = await call_with_fallback(
+                chain=self._ctx.model_config.fast_chain,
+                bus=self._bus,
+                session_id=self._ctx.session_id,
+                messages=act_messages,
                 max_tokens=TRIAGE_TOKEN_BUDGET["act"],
                 tools=[SEARCH_SYMPTOM_KB_SCHEMA],
                 tool_choice="auto",
-                messages=act_messages,
             )
 
             msg = response.choices[0].message
@@ -344,10 +349,12 @@ class TriageAgent:
             + [{"role": "user", "content": retrieval_note}]
         )
 
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.smart,
-            max_tokens=TRIAGE_TOKEN_BUDGET["respond"],
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.smart_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=messages,
+            max_tokens=TRIAGE_TOKEN_BUDGET["respond"],
         )
 
         content = response.choices[0].message.content

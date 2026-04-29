@@ -19,10 +19,9 @@ from __future__ import annotations
 import json
 from enum import Enum
 
-from openai import AsyncOpenAI
-
 from medi.core.context import DialogueState, UnifiedContext
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
+from medi.core.llm_client import call_with_fallback
 
 # 意图描述（注入 LLM prompt，直接影响分类准确率）
 _INTENT_DESCRIPTIONS = {
@@ -52,7 +51,6 @@ class OrchestratorAgent:
     def __init__(self, ctx: UnifiedContext, bus: AsyncStreamBus) -> None:
         self._ctx = ctx
         self._bus = bus
-        self._client = AsyncOpenAI()
         self._last_response: str = ""   # 上一次给出的建议，供 followup 时作上下文
 
     async def decompose_input(self, user_input: str) -> list[str]:
@@ -64,10 +62,10 @@ class OrchestratorAgent:
           "我发烧，布洛芬和阿司匹林能一起吃吗"
           → ["我发烧", "布洛芬和阿司匹林能一起吃吗"]
         """
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.fast,
-            max_tokens=150,
-            temperature=0,
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.fast_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=[
                 {
                     "role": "system",
@@ -80,6 +78,8 @@ class OrchestratorAgent:
                 },
                 {"role": "user", "content": user_input},
             ],
+            max_tokens=150,
+            temperature=0,
         )
 
         raw = response.choices[0].message.content.strip()
@@ -133,10 +133,10 @@ class OrchestratorAgent:
                 for m in self._ctx.messages[-6:]
             )
 
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.fast,
-            max_tokens=15,
-            temperature=0,
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.fast_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=[
                 {
                     "role": "system",
@@ -151,6 +151,8 @@ class OrchestratorAgent:
                 },
                 {"role": "user", "content": user_input},
             ],
+            max_tokens=15,
+            temperature=0,
         )
 
         raw = response.choices[0].message.content.strip().lower()
@@ -171,9 +173,10 @@ class OrchestratorAgent:
 
         self._ctx.add_user_message(user_input)
 
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.fast,
-            max_tokens=300,
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.fast_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=[
                 {
                     "role": "system",
@@ -183,6 +186,7 @@ class OrchestratorAgent:
                     ),
                 },
             ] + self._ctx.messages,
+            max_tokens=300,
         )
 
         content = response.choices[0].message.content

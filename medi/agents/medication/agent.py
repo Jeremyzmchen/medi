@@ -16,10 +16,9 @@ MedicationAgent — 用药咨询 Agent
 
 from __future__ import annotations
 
-from openai import AsyncOpenAI
-
 from medi.core.context import UnifiedContext
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
+from medi.core.llm_client import call_with_fallback
 
 MEDICATION_SYSTEM_PROMPT = """你是一位专业的用药咨询助手，帮助用户了解药物信息。
 
@@ -40,7 +39,6 @@ class MedicationAgent:
     def __init__(self, ctx: UnifiedContext, bus: AsyncStreamBus) -> None:
         self._ctx = ctx
         self._bus = bus
-        self._client = AsyncOpenAI()
 
     async def handle(self, user_input: str) -> None:
         """处理一次用药咨询，单轮 GPT-4o 调用"""
@@ -56,10 +54,12 @@ class MedicationAgent:
             + self._ctx.messages
         )
 
-        response = await self._client.chat.completions.create(
-            model=self._ctx.model_config.smart,
-            max_tokens=600,
+        response = await call_with_fallback(
+            chain=self._ctx.model_config.smart_chain,
+            bus=self._bus,
+            session_id=self._ctx.session_id,
             messages=messages,
+            max_tokens=600,
         )
 
         content = response.choices[0].message.content
