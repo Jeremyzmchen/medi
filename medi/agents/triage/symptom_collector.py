@@ -110,7 +110,7 @@ _FIELD_LABELS = {
 async def build_follow_up_question(
     missing: list[str],
     symptom_info: SymptomInfo,
-    client: AsyncOpenAI,
+    client: AsyncOpenAI | None = None,
     fast_model: str = "gpt-4o-mini",
 ) -> str:
     """
@@ -122,6 +122,9 @@ async def build_follow_up_question(
     missing_desc = "、".join(_FIELD_LABELS[f] for f in top_missing if f in _FIELD_LABELS)
 
     known_info = symptom_info.to_summary()
+
+    if client is None:
+        client = AsyncOpenAI()
 
     response = await client.chat.completions.create(
         model=fast_model,

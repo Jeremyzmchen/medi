@@ -73,9 +73,15 @@ class OrchestratorAgent:
         )
 
         state = self._ctx.dialogue_state.value
+        _intake_active_states = {
+            DialogueState.COLLECTING,
+            DialogueState.GRAPH_RUNNING,
+            DialogueState.INTAKE_WAITING,
+        }
         state_hint = (
-            "（注意：当前分诊正在进行中，用户新输入很可能是症状补充而非新主诉）"
-            if self._ctx.dialogue_state == DialogueState.COLLECTING
+            "（注意：当前分诊护士正在采集病史，用户新输入是对护士问题的回答，"
+            "应归为 symptom，即使内容很短（如数字、单词、'不清楚'等））"
+            if self._ctx.dialogue_state in _intake_active_states
             else "（注意：上一次分诊已完成，用户新输入更可能是新主诉）"
         )
 

@@ -25,10 +25,9 @@ from rich.table import Table
 from medi.core.context import UnifiedContext, ModelConfig
 from medi.core.stream_bus import AsyncStreamBus, EventType
 from medi.core.observability import ObservabilityStore, query_recent_sessions, query_session_detail
-from medi.agents.triage.agent import TriageAgent
+from medi.agents.triage.runner import TriageGraphRunner
 from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent, Intent
-from medi.agents.triage.symptom_collector import SymptomInfo
 from medi.agents.medication.agent import MedicationAgent
 from medi.agents.health_report.agent import HealthReportAgent
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
@@ -36,6 +35,12 @@ from medi.memory.episodic import EpisodicMemory
 
 app = typer.Typer(name="medi", help="Medi 智能健康 Agent", invoke_without_command=True)
 console = Console()
+
+
+def _hpi_row(label: str, value) -> None:
+    """打印 HPI 字段行，值为 None 时跳过"""
+    if value:
+        console.print(f"[bold]{label}：[/bold]{value}")
 
 
 async def _collect_profile(user_id: str) -> HealthProfile:
@@ -94,7 +99,7 @@ async def _chat_loop(user_id: str) -> None:
     router = DepartmentRouter()
     bus = AsyncStreamBus()
     orchestrator = OrchestratorAgent(ctx=ctx, bus=bus)
-    triage_agent = TriageAgent(
+    triage_agent = TriageGraphRunner(
         ctx=ctx,
         bus=bus,
         router=router,
@@ -124,7 +129,7 @@ async def _chat_loop(user_id: str) -> None:
         # 注入异步信息
         nonlocal bus
         bus = AsyncStreamBus()
-        triage_agent._bus = bus
+        triage_agent._bus = bus  # TriageGraphRunner._bus
         orchestrator._bus = bus
         medication_agent._bus = bus
         health_report_agent._bus = bus
@@ -137,15 +142,65 @@ async def _chat_loop(user_id: str) -> None:
                 if event.type == EventType.FOLLOW_UP:
                     console.print(f"\n[cyan]Medi:[/cyan] {event.data['question']}")
                 elif event.type == EventType.RESULT:
-                    console.print("\n[cyan]Medi:[/cyan]")
-                    console.print(Markdown(event.data["content"]))
+                    patient_out = event.data.get("patient_output")
+                    doctor_hpi = event.data.get("doctor_hpi")
+
+                    if patient_out:
+                        # ── 患者端：科室推荐 + 紧急程度 + 建议 ──
+                        console.print("\n[bold cyan]── 分诊结果 ──[/bold cyan]")
+                        depts = patient_out.get("recommended_departments") or []
+                        if depts:
+                            console.print("[bold]推荐科室：[/bold]")
+                            for d in depts:
+                                conf = int(d.get("confidence", 0) * 100)
+                                console.print(f"  • {d['department']}（{conf}%）— {d.get('reason','')}")
+                        urgency = patient_out.get("urgency_level", "normal")
+                        urgency_map = {"emergency": "[bold red]紧急[/bold red]", "urgent": "[yellow]较急[/yellow]", "normal": "[green]普通[/green]", "watchful": "[dim]观察[/dim]"}
+                        console.print(f"[bold]紧急程度：[/bold]{urgency_map.get(urgency, urgency)} — {patient_out.get('urgency_reason','')}")
+                        console.print(f"[bold]就医建议：[/bold]{patient_out.get('patient_advice','')}")
+                        flags = patient_out.get("red_flags_to_watch") or []
+                        if flags:
+                            console.print("[bold]危险信号（立即就医）：[/bold]" + "、".join(flags))
+                    else:
+                        console.print("\n[cyan]Medi:[/cyan]")
+                        console.print(Markdown(event.data["content"]))
+
+                    if doctor_hpi:
+                        # ── 医生端：HPI 预诊报告 ──
+                        console.print("\n[bold magenta]── 医生预诊报告（HPI）──[/bold magenta]")
+                        console.print(f"[bold]主诉：[/bold]{doctor_hpi.get('chief_complaint','')}")
+                        console.print(f"[bold]HPI 叙述：[/bold]{doctor_hpi.get('hpi_narrative','')}")
+                        _hpi_row("发作时间", doctor_hpi.get("onset"))
+                        _hpi_row("部位", doctor_hpi.get("location"))
+                        _hpi_row("持续时间", doctor_hpi.get("duration"))
+                        _hpi_row("性质", doctor_hpi.get("character"))
+                        _hpi_row("加重/缓解", doctor_hpi.get("alleviating_aggravating_factors"))
+                        _hpi_row("放射痛", doctor_hpi.get("radiation"))
+                        _hpi_row("时间特征", doctor_hpi.get("timing"))
+                        _hpi_row("严重程度", doctor_hpi.get("severity_score"))
+                        assoc = doctor_hpi.get("associated_symptoms") or []
+                        if assoc:
+                            console.print(f"[bold]伴随症状：[/bold]{', '.join(assoc)}")
+                        neg = doctor_hpi.get("pertinent_negatives") or []
+                        if neg:
+                            console.print(f"[bold]相关阴性：[/bold]{', '.join(neg)}")
+                        meds = doctor_hpi.get("current_medications") or []
+                        allerg = doctor_hpi.get("allergies") or []
+                        console.print(f"[bold]用药：[/bold]{', '.join(meds) if meds else '无'}  [bold]过敏：[/bold]{', '.join(allerg) if allerg else '无'}")
+                        diffs = doctor_hpi.get("differential_diagnoses") or []
+                        if diffs:
+                            console.print("[bold]鉴别诊断：[/bold]")
+                            for d in diffs:
+                                console.print(f"  • [{d.get('likelihood','')}] {d.get('condition','')} — {d.get('reasoning','')}")
+                        workup = doctor_hpi.get("recommended_workup") or []
+                        if workup:
+                            console.print(f"[bold]建议检查：[/bold]{', '.join(workup)}")
+
                 elif event.type == EventType.ESCALATION:
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
-            # OPQRST六维模型信息
-            symptom_summary = triage_agent._symptom_info.to_summary()
-            # 意图分类
+            symptom_summary = triage_agent.symptom_summary()
             intent = await orchestrator.classify_intent(user_input, symptom_summary)
 
             if intent == Intent.OUT_OF_SCOPE:
@@ -154,7 +209,7 @@ async def _chat_loop(user_id: str) -> None:
                 await orchestrator.handle_followup(user_input)
             elif intent == Intent.NEW_SYMPTOM:
                 ctx.messages.clear()
-                triage_agent._symptom_info = SymptomInfo()
+                triage_agent.reset_graph_state()
                 await triage_agent.handle(user_input)
             elif intent == Intent.MEDICATION:
                 await medication_agent.handle(user_input)

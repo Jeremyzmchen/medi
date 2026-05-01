@@ -22,7 +22,6 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from medi.agents.orchestrator import Intent
-from medi.agents.triage.symptom_collector import SymptomInfo
 from medi.api.schemas import ChatRequest, ChatResponse
 from medi.api.session_store import get_or_create_session, rebind_bus
 from medi.core.stream_bus import AsyncStreamBus, EventType
@@ -59,10 +58,17 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
                     session.session_id,
                 ))
             elif event.type == EventType.RESULT:
+                # 透传结构化字段：patient_output / doctor_hpi（来自 LangGraph OutputNode）
+                metadata = {}
+                if "patient_output" in event.data:
+                    metadata["patient_output"] = event.data["patient_output"]
+                if "doctor_hpi" in event.data:
+                    metadata["doctor_hpi"] = event.data["doctor_hpi"]
                 events.append(_event_to_dict(
                     "result",
                     event.data.get("content", ""),
                     session.session_id,
+                    metadata=metadata if metadata else None,
                 ))
             elif event.type == EventType.ESCALATION:
                 events.append(_event_to_dict(
@@ -83,7 +89,7 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
         orchestrator = session.orchestrator
         medication_agent = session.medication_agent
 
-        symptom_summary = agent._symptom_info.to_summary()
+        symptom_summary = agent.symptom_summary()
         intent = await orchestrator.classify_intent(message, symptom_summary)
 
         if intent == Intent.OUT_OF_SCOPE:
@@ -92,7 +98,7 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
             await orchestrator.handle_followup(message)
         elif intent == Intent.NEW_SYMPTOM:
             ctx.messages.clear()
-            agent._symptom_info = SymptomInfo()
+            agent.reset_graph_state()
             await agent.handle(message)
         elif intent == Intent.MEDICATION:
             await medication_agent.handle(message)
@@ -158,7 +164,7 @@ async def chat_stream(
                 orchestrator = session.orchestrator
                 medication_agent = session.medication_agent
 
-                symptom_summary = agent._symptom_info.to_summary()
+                symptom_summary = agent.symptom_summary()
                 intent = await orchestrator.classify_intent(message, symptom_summary)
 
                 if intent == Intent.OUT_OF_SCOPE:
@@ -167,7 +173,7 @@ async def chat_stream(
                     await orchestrator.handle_followup(message)
                 elif intent == Intent.NEW_SYMPTOM:
                     ctx.messages.clear()
-                    agent._symptom_info = SymptomInfo()
+                    agent.reset_graph_state()
                     await agent.handle(message)
                 elif intent == Intent.MEDICATION:
                     await medication_agent.handle(message)
@@ -184,7 +190,17 @@ async def chat_stream(
                 if event.type == EventType.FOLLOW_UP:
                     payload = _event_to_dict("follow_up", event.data.get("question", ""), session.session_id)
                 elif event.type == EventType.RESULT:
-                    payload = _event_to_dict("result", event.data.get("content", ""), session.session_id)
+                    sse_meta = {}
+                    if "patient_output" in event.data:
+                        sse_meta["patient_output"] = event.data["patient_output"]
+                    if "doctor_hpi" in event.data:
+                        sse_meta["doctor_hpi"] = event.data["doctor_hpi"]
+                    payload = _event_to_dict(
+                        "result",
+                        event.data.get("content", ""),
+                        session.session_id,
+                        metadata=sse_meta if sse_meta else None,
+                    )
                 elif event.type == EventType.ESCALATION:
                     payload = _event_to_dict("escalation", event.data.get("reason", ""), session.session_id)
                 elif event.type == EventType.ERROR:
