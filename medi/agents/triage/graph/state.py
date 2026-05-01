@@ -196,7 +196,10 @@ def empty_collection_status() -> CollectionStatus:
 MAX_INTAKE_ROUNDS = 10
 
 
-def check_minimum_fields(status: CollectionStatus) -> tuple[bool, list[str]]:
+def check_minimum_fields(
+    status: CollectionStatus,
+    assistant_count: int = 0,
+) -> tuple[bool, list[str]]:
     """
     校验最低必要字段是否已采集。
     返回 (passed, missing_fields)
@@ -204,9 +207,12 @@ def check_minimum_fields(status: CollectionStatus) -> tuple[bool, list[str]]:
     规则：
     - medications_allergies 必须是 "complete"（护士必须亲口问到）
     - 其余关键字段只要不是 "missing"（complete 或 partial 均可）
+    - 宽松模式（assistant_count >= 5）：quality/severity 不再强制要求，
+      避免对不适用的症状类型死追疼痛量表问题
     """
     missing = []
     opqrst = status.get("opqrst") or {}
+    relaxed = assistant_count >= 5   # 5轮后进入宽松模式
 
     # 主诉
     if status.get("chief_complaint") == "missing":
@@ -217,17 +223,30 @@ def check_minimum_fields(status: CollectionStatus) -> tuple[bool, list[str]]:
     # 发作时间
     if opqrst.get("onset", "missing") == "missing":
         missing.append("opqrst.onset")
-    # 性质
-    if opqrst.get("quality", "missing") == "missing":
+    # 性质（宽松模式下跳过）
+    if not relaxed and opqrst.get("quality", "missing") == "missing":
         missing.append("opqrst.quality")
-    # 严重程度
-    if opqrst.get("severity", "missing") == "missing":
+    # 严重程度（宽松模式下跳过）
+    if not relaxed and opqrst.get("severity", "missing") == "missing":
         missing.append("opqrst.severity")
     # 时间特征
     if opqrst.get("time_pattern", "missing") == "missing":
         missing.append("opqrst.time_pattern")
-    # 用药/过敏：必须是 complete
+    # 用药/过敏：必须是 complete，无论哪种模式
     if status.get("medications_allergies") != "complete":
         missing.append("medications_allergies")
 
     return len(missing) == 0, missing
+
+
+def count_partial_fields(status: CollectionStatus) -> int:
+    """统计 OPQRST + 顶层字段里值为 partial 的数量"""
+    partial = 0
+    opqrst = status.get("opqrst") or {}
+    for f in ("onset", "provocation", "quality", "location", "severity", "time_pattern", "radiation"):
+        if opqrst.get(f) == "partial":
+            partial += 1
+    for f in ("chief_complaint", "associated_symptoms", "relevant_history"):
+        if status.get(f) == "partial":
+            partial += 1
+    return partial

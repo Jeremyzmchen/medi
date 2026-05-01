@@ -179,7 +179,13 @@ async def output_node(
     ))
 
     # ── 持久化到 EpisodicMemory ──
-    top_department = department_candidates[0]["department"] if department_candidates else "待确认"
+    # 优先用 LLM 生成的 patient_output 里的科室（经过推理修正），
+    # 而非直接用向量检索的 department_candidates（可能匹配偏差）
+    llm_depts = patient_output.get("recommended_departments") or []
+    top_department = (
+        llm_depts[0]["department"] if llm_depts
+        else (department_candidates[0]["department"] if department_candidates else "待确认")
+    )
     await episodic.save(
         symptom_summary=symptom_summary,
         advice=patient_output["patient_advice"],
