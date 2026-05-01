@@ -140,6 +140,8 @@ class FactStore:
         return SymptomData(
             raw_descriptions=raw_descriptions,
             onset=self.value("hpi.onset"),
+            exposure_event=self.value("hpi.exposure_event"),
+            exposure_symptoms=self.value("hpi.exposure_symptoms"),
             provocation=self.value("hpi.aggravating_alleviating"),
             quality=self.value("hpi.character"),
             region=self.value("hpi.location"),
@@ -173,6 +175,8 @@ class FactStore:
 BASE_SLOT_SPECS: dict[str, SlotSpec] = {
     "hpi.chief_complaint": SlotSpec("hpi.chief_complaint", "主诉", "您今天主要是哪里不舒服，能描述一下吗？", 10),
     "hpi.onset": SlotSpec("hpi.onset", "发作时间", "这个症状是什么时候开始的？", 20),
+    "hpi.exposure_event": SlotSpec("hpi.exposure_event", "相关暴露事件", "症状出现前有没有潜水、飞行、游泳、外伤、感染接触等相关经历？", 25),
+    "hpi.exposure_symptoms": SlotSpec("hpi.exposure_symptoms", "暴露后症状变化", "相关经历当时或之后有没有立刻出现不适？", 26),
     "hpi.location": SlotSpec("hpi.location", "部位", "您能告诉我具体是哪个部位不舒服吗？", 30),
     "hpi.severity": SlotSpec("hpi.severity", "严重程度", "这个不适大概有多严重？比如疼痛 0 到 10 分，或发热的最高体温、腹泻次数等。", 40),
     "hpi.timing": SlotSpec("hpi.timing", "时间特征", "这个症状是一直持续还是时好时坏？大概持续多久了？", 50),
@@ -299,6 +303,8 @@ def normalize_status(value) -> str:
 
 
 def should_replace(current: ClinicalFact, new: ClinicalFact) -> bool:
+    if _is_exposure_onset_correction(current, new):
+        return True
     if current.status in UNKNOWN_STATUSES and new.status not in UNKNOWN_STATUSES:
         return True
     if new.confidence > current.confidence + 0.15:
@@ -306,6 +312,19 @@ def should_replace(current: ClinicalFact, new: ClinicalFact) -> bool:
     if new.value and new.value != current.value and new.status in ANSWERED_STATUSES:
         return True
     return False
+
+
+def _is_exposure_onset_correction(current: ClinicalFact, new: ClinicalFact) -> bool:
+    if current.slot != "hpi.onset" or new.slot != "hpi.onset":
+        return False
+    current_value = current.value or current.evidence
+    new_value = new.value or new.evidence
+    exposure_terms = ("潜水", "游泳", "坐飞机", "飞行", "外伤", "撞到", "摔倒")
+    onset_terms = ("今天", "昨晚", "昨天", "刚才", "现在", "早上", "中午", "下午", "晚上")
+    return (
+        any(term in current_value for term in exposure_terms)
+        and any(term in new_value for term in onset_terms)
+    )
 
 
 def slot_label(slot: str, plan: ResolvedIntakePlan | None = None) -> str:

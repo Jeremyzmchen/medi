@@ -59,3 +59,15 @@ def test_deterministic_rules_extract_no_drug_allergy() -> None:
 
     assert by_slot["safety.current_medications"]["value"] == "布洛芬"
     assert by_slot["safety.allergies"]["status"] == "absent"
+
+
+def test_exposure_timeline_keeps_diving_separate_from_symptom_onset() -> None:
+    facts = extract_deterministic_facts(
+        _messages("上周去菲律宾潜水没发现耳朵痛，今天耳朵里有些刺痛")
+    )
+    by_slot = {fact["slot"]: fact for fact in facts}
+
+    assert by_slot["hpi.exposure_event"]["value"] == "上周去菲律宾潜水"
+    assert by_slot["hpi.exposure_symptoms"]["status"] == "absent"
+    assert by_slot["hpi.exposure_symptoms"]["value"] == "潜水当时或之后无耳痛"
+    assert by_slot["hpi.onset"]["value"] == "今天耳朵里有些刺痛"

@@ -124,6 +124,8 @@ class SymptomData(TypedDict, total=False):
     """从对话中提取的结构化症状数据（供 ClinicalNode 使用）"""
     raw_descriptions: list[str]
     onset: str | None
+    exposure_event: str | None
+    exposure_symptoms: str | None
     provocation: str | None
     quality: str | None
     region: str | None
@@ -244,7 +246,7 @@ class TriageGraphState(TypedDict, total=False):
 def empty_symptom_data() -> SymptomData:
     return SymptomData(
         raw_descriptions=[],
-        onset=None, provocation=None, quality=None,
+        onset=None, exposure_event=None, exposure_symptoms=None, provocation=None, quality=None,
         region=None, severity=None, max_temperature=None, frequency=None, time_pattern=None,
         radiation=None, accompanying=[],
         relevant_history=None, medications=[], allergies=[],

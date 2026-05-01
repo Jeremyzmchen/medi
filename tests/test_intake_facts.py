@@ -51,3 +51,26 @@ def test_fever_required_slots_do_not_include_measurement_method() -> None:
     assert plan.protocol_id == "fever"
     assert "specific.max_temperature" in slots
     assert "specific.measurement_method" not in slots
+
+
+def test_fact_store_preserves_exposure_timeline_in_symptom_data() -> None:
+    store = _store(
+        {"slot": "hpi.exposure_event", "status": "present", "value": "上周去菲律宾潜水"},
+        {"slot": "hpi.exposure_symptoms", "status": "absent", "value": "潜水当时或之后无耳痛"},
+        {"slot": "hpi.onset", "status": "present", "value": "今天耳朵里刺痛"},
+    )
+
+    symptom_data = store.to_symptom_data(["上周去菲律宾潜水没发现耳朵痛，今天耳朵里有些刺痛"])
+
+    assert symptom_data["exposure_event"] == "上周去菲律宾潜水"
+    assert symptom_data["exposure_symptoms"] == "潜水当时或之后无耳痛"
+    assert symptom_data["onset"] == "今天耳朵里刺痛"
+
+
+def test_fact_store_corrects_exposure_misattributed_as_onset() -> None:
+    store = _store(
+        {"slot": "hpi.onset", "status": "present", "value": "上周潜水后", "confidence": 0.9},
+        {"slot": "hpi.onset", "status": "present", "value": "今天耳朵里刺痛", "confidence": 0.92},
+    )
+
+    assert store.value("hpi.onset") == "今天耳朵里刺痛"

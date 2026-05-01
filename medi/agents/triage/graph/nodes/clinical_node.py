@@ -197,7 +197,11 @@ def _build_symptom_summary(symptom_data: dict) -> str:
     if symptom_data.get("time_pattern"):
         lines.append(f"时间：{symptom_data['time_pattern']}")
     if symptom_data.get("onset"):
-        lines.append(f"诱因：{symptom_data['onset']}")
+        lines.append(f"起病时间：{symptom_data['onset']}")
+    if symptom_data.get("exposure_event"):
+        lines.append(f"相关暴露：{symptom_data['exposure_event']}")
+    if symptom_data.get("exposure_symptoms"):
+        lines.append(f"暴露后症状：{symptom_data['exposure_symptoms']}")
     if symptom_data.get("quality"):
         lines.append(f"性质：{symptom_data['quality']}")
     max_temperature = symptom_data.get("max_temperature")
@@ -246,7 +250,7 @@ def _build_symptom_summary(symptom_data: dict) -> str:
 def _build_query_text(symptom_data: dict, messages: list[dict]) -> str:
     """构建向量检索用的文本：优先用结构化字段，退回到对话历史"""
     parts = []
-    for field in ("region", "quality", "time_pattern", "onset", "max_temperature", "frequency"):
+    for field in ("region", "quality", "time_pattern", "onset", "exposure_event", "max_temperature", "frequency"):
         val = symptom_data.get(field)
         if val:
             parts.append(val)

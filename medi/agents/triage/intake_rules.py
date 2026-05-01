@@ -86,6 +86,7 @@ def extract_deterministic_facts(
     """从用户原文里抽取高置信度事实。"""
     text = _user_text(messages)
     facts: list[dict] = []
+    facts.extend(_extract_exposure_timeline(text))
 
     meds, medication_evidence = _extract_medications(text)
     if meds:
@@ -127,12 +128,111 @@ def extract_deterministic_facts(
     return facts
 
 
+def _extract_exposure_timeline(text: str) -> list[dict]:
+    """抽取“相关暴露”和“暴露后阴性”时间线，避免误当作症状起病。"""
+    facts: list[dict] = []
+    exposure = _extract_exposure_event(text)
+    if exposure:
+        facts.append({
+            "slot": "hpi.exposure_event",
+            "status": "present",
+            "value": exposure,
+            "evidence": exposure,
+            "confidence": 0.96,
+        })
+
+    exposure_negative = _extract_exposure_negative(text)
+    if exposure_negative:
+        facts.append({
+            "slot": "hpi.exposure_symptoms",
+            "status": "absent",
+            "value": exposure_negative,
+            "evidence": exposure_negative,
+            "confidence": 0.96,
+        })
+
+    onset = _extract_today_onset(text)
+    if onset:
+        facts.append({
+            "slot": "hpi.onset",
+            "status": "present",
+            "value": onset,
+            "evidence": onset,
+            "confidence": 0.92,
+        })
+
+    return facts
+
+
 def _user_text(messages: Iterable[dict]) -> str:
     return "。".join(
         str(m.get("content") or "")
         for m in messages
         if m.get("role") == "user" and m.get("content")
     )
+
+
+def _extract_exposure_event(text: str) -> str | None:
+    exposure_keywords = ("潜水", "游泳", "坐飞机", "飞行", "高铁", "爬山", "外伤", "撞到", "摔倒")
+    if not any(keyword in text for keyword in exposure_keywords):
+        return None
+    match = re.search(
+        r"((?:上周|上星期|上个月|昨天|前天|今天|刚才|最近|[一二三四五六七八九十\d]+天前)[^。！？!?；;\n\r]{0,24}?"
+        r"(?:潜水|游泳|坐飞机|飞行|高铁|爬山|外伤|撞到|摔倒))",
+        text,
+    )
+    if match:
+        return match.group(1).strip("，,。；; ")
+    return _sentence_containing_any(text, exposure_keywords)
+
+
+def _extract_exposure_negative(text: str) -> str | None:
+    if not any(keyword in text for keyword in ("潜水", "游泳", "坐飞机", "飞行", "外伤")):
+        return None
+    symptom_keywords = ("耳朵痛", "耳痛", "疼", "痛", "不适", "听力下降", "耳闷")
+    negative_markers = ("没发现", "没有", "无", "没觉得", "未出现", "不觉得")
+    for sentence in re.split(r"[。！？!?；;\n\r]", text):
+        if not sentence.strip():
+            continue
+        if any(marker in sentence for marker in negative_markers) and any(symptom in sentence for symptom in symptom_keywords):
+            exposure_context = "暴露当时或之后"
+            if "潜水" in sentence:
+                exposure_context = "潜水当时或之后"
+            elif "游泳" in sentence:
+                exposure_context = "游泳当时或之后"
+            elif "飞机" in sentence or "飞行" in sentence:
+                exposure_context = "飞行当时或之后"
+            symptom = _negated_symptom_label(sentence)
+            return f"{exposure_context}{symptom}"
+    return None
+
+
+def _negated_symptom_label(sentence: str) -> str:
+    if "听力下降" in sentence:
+        return "无听力下降"
+    if "耳闷" in sentence:
+        return "无耳闷"
+    if "耳朵痛" in sentence or "耳痛" in sentence:
+        return "无耳痛"
+    if "不适" in sentence:
+        return "无明显不适"
+    if "疼" in sentence or "痛" in sentence:
+        return "无疼痛"
+    return "无相关症状"
+
+
+def _extract_today_onset(text: str) -> str | None:
+    match = re.search(r"(今天[^。！？!?；;\n\r]{0,20}?(?:痛|疼|刺痛|不适|听力下降|耳闷|耳鸣))", text)
+    if match:
+        return match.group(1).strip("，,。；; ")
+    return None
+
+
+def _sentence_containing_any(text: str, keywords: Iterable[str]) -> str | None:
+    for sentence in re.split(r"[。！？!?；;\n\r]", text):
+        if any(keyword in sentence for keyword in keywords):
+            return sentence.strip()
+    return None
 
 
 def _extract_medications(text: str) -> tuple[list[str], str]:
