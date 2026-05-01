@@ -13,6 +13,7 @@ ClinicalNode — 临床推理节点
   - urgency_level / urgency_reason
   - differential_diagnoses
   - risk_factors_summary
+  - clinical_missing_slots: 需要回补的明确字段
   - next_node: "output" 或 "intake"（back-loop）
 """
 
@@ -21,6 +22,8 @@ from __future__ import annotations
 import json
 
 from medi.agents.triage.graph.state import TriageGraphState, DifferentialDiagnosis, DepartmentResult
+from medi.agents.triage.intake_facts import FactStore
+from medi.agents.triage.symptom_utils import format_severity_line, looks_like_temperature
 from medi.agents.triage.tools.clinical_tools import (
     evaluate_risk_factors,
     build_differential_prompt,
@@ -45,8 +48,7 @@ async def clinical_node(
     """
     ClinicalNode 执行函数。
 
-    back-loop 条件：鉴别诊断不明确（top-2 差距 < 0.2）且有关键字段缺失，
-    且 graph_iteration < 2（最多回一次）。
+    back-loop 条件：鉴别诊断不明确、存在明确可补字段，且 graph_iteration < 2。
     """
     await bus.emit(StreamEvent(
         type=EventType.STAGE_START,
@@ -103,12 +105,12 @@ async def clinical_node(
     )
 
     # ── 5. back-loop 判断 ──
-    # 条件：诊断模糊（无高可能性项）+ 有关键缺失字段 + 还没回追问过
+    # 只有明确知道缺哪个字段时才回追问，避免“不自信所以再问一轮”的宽泛循环。
     graph_iteration = state.get("graph_iteration", 1)
     has_high_likelihood = any(d["likelihood"] == "high" for d in differential_diagnoses)
-    has_key_missing = not symptom_data.get("region") and not symptom_data.get("time_pattern")
+    clinical_missing_slots = _missing_for_diagnosis(state, symptom_data)
 
-    if not has_high_likelihood and has_key_missing and graph_iteration < 2:
+    if not has_high_likelihood and clinical_missing_slots and graph_iteration < 2:
         next_node = "intake"
     else:
         next_node = "output"
@@ -119,6 +121,7 @@ async def clinical_node(
         "urgency_reason": urgency_reason,
         "differential_diagnoses": differential_diagnoses,
         "risk_factors_summary": risk_factors_summary,
+        "clinical_missing_slots": clinical_missing_slots,
         "next_node": next_node,
     }
 
@@ -197,8 +200,14 @@ def _build_symptom_summary(symptom_data: dict) -> str:
         lines.append(f"诱因：{symptom_data['onset']}")
     if symptom_data.get("quality"):
         lines.append(f"性质：{symptom_data['quality']}")
-    if symptom_data.get("severity"):
-        lines.append(f"程度：{symptom_data['severity']}/10")
+    max_temperature = symptom_data.get("max_temperature")
+    if max_temperature:
+        lines.append(f"最高体温：{max_temperature}")
+    if symptom_data.get("frequency"):
+        lines.append(f"频率/次数：{symptom_data['frequency']}")
+    severity = symptom_data.get("severity")
+    if severity and not (max_temperature and looks_like_temperature(str(severity))):
+        lines.append(format_severity_line(str(severity)))
     if symptom_data.get("radiation"):
         lines.append(f"放射痛：{symptom_data['radiation']}")
     if symptom_data.get("provocation"):
@@ -211,6 +220,23 @@ def _build_symptom_summary(symptom_data: dict) -> str:
         lines.append(f"用药：{', '.join(symptom_data['medications'])}")
     if symptom_data.get("allergies"):
         lines.append(f"过敏：{', '.join(symptom_data['allergies'])}")
+    gc = symptom_data.get("general_condition")
+    if gc:
+        gc_parts = []
+        if gc.get("mental_status"):
+            gc_parts.append(f"精神{gc['mental_status']}")
+        if gc.get("sleep"):
+            gc_parts.append(f"睡眠{gc['sleep']}")
+        if gc.get("appetite"):
+            gc_parts.append(f"食欲{gc['appetite']}")
+        if gc.get("bowel"):
+            gc_parts.append(f"大便{gc['bowel']}")
+        if gc.get("urination"):
+            gc_parts.append(f"小便{gc['urination']}")
+        if gc.get("weight_change"):
+            gc_parts.append(f"体重{gc['weight_change']}")
+        if gc_parts:
+            lines.append(f"一般情况：{', '.join(gc_parts)}")
     # 若字段都为空，退回到原始描述
     if not lines and symptom_data.get("raw_descriptions"):
         return " ".join(symptom_data["raw_descriptions"][-3:])
@@ -220,7 +246,7 @@ def _build_symptom_summary(symptom_data: dict) -> str:
 def _build_query_text(symptom_data: dict, messages: list[dict]) -> str:
     """构建向量检索用的文本：优先用结构化字段，退回到对话历史"""
     parts = []
-    for field in ("region", "quality", "time_pattern", "onset"):
+    for field in ("region", "quality", "time_pattern", "onset", "max_temperature", "frequency"):
         val = symptom_data.get(field)
         if val:
             parts.append(val)
@@ -230,3 +256,78 @@ def _build_query_text(symptom_data: dict, messages: list[dict]) -> str:
         user_msgs = [m["content"] for m in messages if m.get("role") == "user"]
         parts = user_msgs[-3:]
     return " ".join(parts)
+
+
+def _missing_for_diagnosis(state: TriageGraphState, symptom_data: dict) -> list[str]:
+    protocol_id = state.get("intake_protocol_id") or "generic_opqrst"
+    status = state.get("collection_status") or {}
+    pattern = status.get("pattern_specific") or {}
+    store = FactStore.from_state(state.get("intake_facts") or [])
+    missing: list[str] = []
+
+    if not (
+        _slot_collected_or_has_value(store, "hpi.onset", symptom_data, "onset")
+        or _slot_collected_or_has_value(store, "hpi.timing", symptom_data, "time_pattern")
+    ):
+        missing.append("hpi.onset")
+    if not _slot_collected_or_has_value(
+        store,
+        "hpi.associated_symptoms",
+        symptom_data,
+        "accompanying",
+    ):
+        missing.append("hpi.associated_symptoms")
+
+    if protocol_id in {"chest_pain", "abdominal_pain", "headache", "trauma"}:
+        if not _slot_collected_or_has_value(store, "hpi.location", symptom_data, "region"):
+            missing.append("hpi.location")
+    if protocol_id == "chest_pain":
+        if not _slot_collected_or_has_value(store, "hpi.radiation", symptom_data, "radiation"):
+            missing.append("hpi.radiation")
+        _append_missing_pattern(missing, pattern, store, "dyspnea_sweating")
+        _append_missing_pattern(missing, pattern, store, "exertional_related")
+    elif protocol_id == "abdominal_pain":
+        _append_missing_pattern(missing, pattern, store, "stool_or_bleeding")
+    elif protocol_id == "headache":
+        _append_missing_pattern(missing, pattern, store, "neuro_deficits")
+        _append_missing_pattern(missing, pattern, store, "sudden_or_worst")
+    elif protocol_id == "dyspnea":
+        _append_missing_pattern(missing, pattern, store, "rest_or_exertion")
+        _append_missing_pattern(missing, pattern, store, "chest_pain_or_wheeze")
+    elif protocol_id == "diarrhea_vomiting":
+        _append_missing_pattern(missing, pattern, store, "frequency")
+        _append_missing_pattern(missing, pattern, store, "blood_or_black_stool")
+
+    return _unique(missing)
+
+
+def _slot_collected_or_has_value(
+    store: FactStore,
+    slot: str,
+    symptom_data: dict,
+    symptom_key: str,
+) -> bool:
+    if store.is_collected(slot):
+        return True
+    value = symptom_data.get(symptom_key)
+    return bool(value)
+
+
+def _append_missing_pattern(
+    items: list[str],
+    pattern: dict,
+    store: FactStore,
+    key: str,
+) -> None:
+    if pattern.get(key) == "missing" and not store.is_collected(f"specific.{key}"):
+        items.append(f"specific.{key}")
+
+
+def _unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result

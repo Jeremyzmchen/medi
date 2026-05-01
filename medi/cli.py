@@ -43,6 +43,15 @@ def _hpi_row(label: str, value) -> None:
         console.print(f"[bold]{label}：[/bold]{value}")
 
 
+def _hpi_severity_label(value) -> str:
+    text = str(value or "")
+    if any(marker in text for marker in ("体温", "℃", "度")):
+        return "最高体温"
+    if "次" in text or "回" in text:
+        return "频率/次数"
+    return "严重程度"
+
+
 async def _collect_profile(user_id: str) -> HealthProfile:
     """首次使用时引导用户填写健康档案"""
     console.print("\n[yellow]您是第一次使用 Medi，请先完善您的健康档案（更准确的分诊建议）[/yellow]")
@@ -177,7 +186,11 @@ async def _chat_loop(user_id: str) -> None:
                         _hpi_row("加重/缓解", doctor_hpi.get("alleviating_aggravating_factors"))
                         _hpi_row("放射痛", doctor_hpi.get("radiation"))
                         _hpi_row("时间特征", doctor_hpi.get("timing"))
-                        _hpi_row("严重程度", doctor_hpi.get("severity_score"))
+                        severity_score = doctor_hpi.get("severity_score")
+                        severity_label = _hpi_severity_label(severity_score)
+                        if severity_label == "最高体温" and severity_score:
+                            severity_score = str(severity_score).replace("最高体温", "").strip("：: ")
+                        _hpi_row(severity_label, severity_score)
                         assoc = doctor_hpi.get("associated_symptoms") or []
                         if assoc:
                             console.print(f"[bold]伴随症状：[/bold]{', '.join(assoc)}")

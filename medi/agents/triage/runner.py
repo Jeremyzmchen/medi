@@ -22,6 +22,7 @@ from medi.agents.triage.urgency_evaluator import (
     UrgencyLevel,
     EMERGENCY_RESPONSE,
 )
+from medi.agents.triage.symptom_utils import format_severity_line, looks_like_temperature
 from medi.agents.triage.department_router import DepartmentRouter
 from medi.core.context import UnifiedContext, DialogueState
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
@@ -76,6 +77,12 @@ class TriageGraphRunner:
                 messages=[{"role": "user", "content": user_input}],
                 symptom_data=empty_symptom_data(),
                 collection_status=empty_collection_status(),
+                intake_protocol_id="generic_opqrst",
+                intake_overlays=[],
+                intake_facts=[],
+                requested_slots=[],
+                monitor_result={},
+                controller_decision={},
                 follow_up_count=0,
                 intake_complete=False,
                 department_candidates=[],
@@ -83,6 +90,7 @@ class TriageGraphRunner:
                 urgency_reason="",
                 differential_diagnoses=[],
                 risk_factors_summary="",
+                clinical_missing_slots=[],
                 next_node="intake",
                 patient_output=None,
                 doctor_hpi=None,
@@ -123,8 +131,14 @@ class TriageGraphRunner:
             parts.append(f"诱因：{data['onset']}")
         if data.get("quality"):
             parts.append(f"性质：{data['quality']}")
+        if data.get("max_temperature"):
+            parts.append(f"最高体温：{data['max_temperature']}")
+        if data.get("frequency"):
+            parts.append(f"频率/次数：{data['frequency']}")
         if data.get("severity"):
-            parts.append(f"程度：{data['severity']}/10")
+            severity = str(data["severity"])
+            if not (data.get("max_temperature") and looks_like_temperature(severity)):
+                parts.append(format_severity_line(severity))
         if data.get("accompanying"):
             parts.append(f"伴随：{', '.join(data['accompanying'])}")
         raw = data.get("raw_descriptions") or []

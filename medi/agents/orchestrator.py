@@ -67,17 +67,20 @@ class OrchestratorAgent:
           2. symptom_summary — 当前已收集的 OPQRST 摘要
           3. 近期对话历史 — 让分类器感知上下文
         """
+        _intake_active_states = {
+            DialogueState.COLLECTING,
+            DialogueState.GRAPH_RUNNING,
+            DialogueState.INTAKE_WAITING,
+        }
+        if self._ctx.dialogue_state in _intake_active_states:
+            return Intent.SYMPTOM
+
         intent_list = "\n".join(
             f"- {name}: {desc}"
             for name, desc in _INTENT_DESCRIPTIONS.items()
         )
 
         state = self._ctx.dialogue_state.value
-        _intake_active_states = {
-            DialogueState.COLLECTING,
-            DialogueState.GRAPH_RUNNING,
-            DialogueState.INTAKE_WAITING,
-        }
         state_hint = (
             "（注意：当前分诊护士正在采集病史，用户新输入是对护士问题的回答，"
             "应归为 symptom，即使内容很短（如数字、单词、'不清楚'等））"
