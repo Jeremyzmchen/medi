@@ -11,7 +11,6 @@ from __future__ import annotations
 import functools
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from medi.agents.triage.graph.state import TriageGraphState
 from medi.agents.triage.graph.nodes.intake_node import intake_node

@@ -1,7 +1,8 @@
 from medi.agents.triage.intake_facts import FactStore, collection_status_from_facts
 from medi.agents.triage.intake_protocols import resolve_intake_plan
 from medi.agents.triage.intake_rules import extract_deterministic_facts
-from medi.agents.triage.graph.nodes.intake_review_node import review_intake_quality
+from medi.agents.triage.graph.nodes.intake_controller_node import _fallback_question, _pick_next_slot
+from medi.agents.triage.graph.nodes.intake_monitor_node import _score
 
 
 def _messages(text: str) -> list[dict]:
@@ -36,17 +37,14 @@ def test_ibuprofen_in_first_turn_prevents_reasking_current_medication() -> None:
     ], source_turn=1)
 
     status = collection_status_from_facts(store, plan, complete=False, reason="")
-    review = review_intake_quality(
-        store=store,
-        plan=plan,
-        requested_slots=[],
-        assistant_count=2,
-    )
+    _, missing, _, _ = _score(store, plan, relaxed_low_value=False, clinical_missing=[])
+    next_slot = _pick_next_slot(missing, plan, clinical_missing=[])
+    question = _fallback_question(next_slot, plan, store)
 
     assert status["medications_allergies"] == "partial"
-    assert review.next_best_slot == "safety.allergies"
-    assert "过敏" in (review.next_best_question or "")
-    assert "平时在用什么药" not in (review.next_best_question or "")
+    assert next_slot == "safety.allergies"
+    assert "过敏" in question
+    assert "平时在用什么药" not in question
 
 
 def test_deterministic_rules_extract_no_drug_allergy() -> None:

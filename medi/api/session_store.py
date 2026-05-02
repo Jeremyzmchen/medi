@@ -3,7 +3,7 @@
 
 每个 session 持有：
   - UnifiedContext（对话历史、状态机、健康档案）
-  - TriageAgent / MedicationAgent / OrchestratorAgent（已初始化，可复用）
+  - TriageGraphRunner / MedicationAgent / OrchestratorAgent（已初始化，可复用）
 
 生命周期：服务进程内存，重启后丢失（后期可换 Redis 序列化）
 
