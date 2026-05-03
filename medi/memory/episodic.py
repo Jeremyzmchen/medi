@@ -28,7 +28,7 @@ class EpisodicMemory:
         """
         保存一次分诊记录。
         symptom_summary — OPQRST 摘要（来自 SymptomInfo.to_summary()）
-        advice          — TriageAgent 给出的完整建议文本
+        advice          — triage flow 给出的完整建议文本
         department      — 置信度最高的科室（来自 candidates[0].department）
         """
         record = VisitRecord(
@@ -77,5 +77,4 @@ class EpisodicMemory:
             lines.append(f"- {date_str} | {r.department} | {r.chief_complaint[:50]}")
 
         return "\n".join(lines)
-
 

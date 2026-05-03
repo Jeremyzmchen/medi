@@ -26,6 +26,8 @@ class DialogueState(Enum):
     SEARCHING = "searching"         # 检索知识库中
     RESPONDING = "responding"       # 生成建议中
     ESCALATING = "escalating"       # 发现红旗症状，立即升级
+    GRAPH_RUNNING = "graph_running" # LangGraph 分诊图执行中（多 Agent 协作）
+    INTAKE_WAITING = "intake_waiting"  # IntakeNode 已问问题，等待用户回答
     DONE = "done"
 
 
