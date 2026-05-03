@@ -1,7 +1,7 @@
 """
 IntakeMonitorNode — 预诊档案质量评估节点。
 
-对应论文（arXiv:2511.01445）4.2 节 Monitor：
+对应 Monitor 角色：
   只负责评估当前信息完整度，输出 0-100 分和缺失槽位列表。
   不做任何调度决策，不决定问什么、问不问——那是 Controller 的职责。
 
@@ -27,6 +27,7 @@ from medi.agents.triage.intake_protocols import (
     ResolvedIntakePlan,
     resolve_intake_plan,
 )
+from medi.agents.triage.task_progress import evaluate_task_progress
 from medi.agents.triage.task_tree import build_intake_task_tree
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
 
@@ -98,6 +99,9 @@ async def intake_monitor_node(
         relaxed_low_value=relaxed_low_value,
         clinical_missing_slots=clinical_missing,
     )
+    task_progress, pending_tasks = evaluate_task_progress(
+        medical_record=state.get("medical_record"),
+    )
     required_covered = _required_slots_covered(store, plan, relaxed_low_value)
     doctor_ready = _has_core_doctor_summary(store, plan, relaxed_low_value)
     threshold = 80 if plan.protocol_id in HIGH_RISK_PROTOCOLS else 74
@@ -129,6 +133,9 @@ async def intake_monitor_node(
     return {
         "monitor_result": result,
         "task_tree": task_tree,
+        "task_progress": task_progress,
+        "pending_tasks": pending_tasks,
+        "triage_done": _triage_done(task_progress),
         "collection_status": collection_status,
         "next_node": "controller",
     }
@@ -146,7 +153,7 @@ def _score(
 ) -> tuple[int, list[str], bool, bool]:
     """
     返回 (score, missing_slots, red_flags_checked, safety_covered)。
-    评分项与权重对应论文 Table 7 的信息完整度维度。
+    评分项与权重对应信息完整度维度。
     """
     missing: list[str] = list(clinical_missing)
     score = 0
@@ -333,6 +340,13 @@ def _locked_protocol_id(state: TriageGraphState) -> str | None:
     if protocol_id and protocol_id != "generic_opqrst":
         return protocol_id
     return None
+
+
+def _triage_done(task_progress: dict[str, dict]) -> bool:
+    return all(
+        task_progress.get(task_id, {}).get("status") == "complete"
+        for task_id in ("T1_PRIMARY_DEPARTMENT", "T1_SECONDARY_DEPARTMENT")
+    )
 
 
 def _unique(items: list[str]) -> list[str]:

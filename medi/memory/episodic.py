@@ -37,6 +37,7 @@ class EpisodicMemory:
             chief_complaint=symptom_summary,
             conclusion=advice[:500],  # 截断避免存太长
         )
+        # 写入 health_profile 表
         await add_visit_record(self._user_id, record)
 
     async def recent(self, limit: int = 5) -> list[VisitRecord]:
@@ -54,12 +55,12 @@ class EpisodicMemory:
 
         return [
             VisitRecord(
-                visit_date=datetime.fromisoformat(r[0]),
-                department=r[1],
-                chief_complaint=r[2],
-                conclusion=r[3],
+                visit_date=datetime.fromisoformat(visit_date),
+                department=department,
+                chief_complaint=chief_complaint,
+                conclusion=conclusion,
             )
-            for r in rows
+            for visit_date, department, chief_complaint, conclusion in rows
         ]
 
     async def build_history_prompt(self, limit: int = 3) -> str:
@@ -77,4 +78,3 @@ class EpisodicMemory:
             lines.append(f"- {date_str} | {r.department} | {r.chief_complaint[:50]}")
 
         return "\n".join(lines)
-

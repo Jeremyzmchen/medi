@@ -24,17 +24,18 @@ DB_PATH = Path(__file__).parents[3] / "data" / "medi.db"
 
 @dataclass
 class VisitRecord:
-    visit_date: datetime
-    department: str
-    chief_complaint: str
-    conclusion: str
+    """问诊记录"""
+    visit_date: datetime       # 问诊时间
+    department: str            # 部门
+    chief_complaint: str       # 主诉
+    conclusion: str            # 结论
 
 
 @dataclass
 class HealthProfile:
-    user_id: str
-    age: int | None = None
-    gender: str | None = None                                       # "男" / "女"
+    user_id: str                                                    # 用户id
+    age: int | None = None                                          # 年龄
+    gender: str | None = None                                       # 性别
     chronic_conditions: list[str] = field(default_factory=list)     # 慢性病史
     allergies: list[str] = field(default_factory=list)              # 过敏史
     current_medications: list[str] = field(default_factory=list)    # 当前用药
@@ -46,6 +47,7 @@ class HealthProfile:
 
 
 async def _ensure_tables(db: aiosqlite.Connection) -> None:
+    """初始化表格，确保数据库表已存在"""
     await db.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
             user_id    TEXT PRIMARY KEY,
@@ -75,7 +77,8 @@ async def load_profile(user_id: str) -> HealthProfile:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_tables(db)
-
+        
+        # 根据userId查询用户档案 
         async with db.execute(
             "SELECT age, gender, chronic_conditions, allergies, current_medications "
             "FROM profiles WHERE user_id = ?",
@@ -85,8 +88,9 @@ async def load_profile(user_id: str) -> HealthProfile:
 
         if row is None:
             return HealthProfile(user_id=user_id)
-
+        # 解包
         age, gender, chronic_json, allergy_json, meds_json = row
+        # 建档
         profile = HealthProfile(
             user_id=user_id,
             age=age,
@@ -106,12 +110,12 @@ async def load_profile(user_id: str) -> HealthProfile:
 
         profile.visit_history = [
             VisitRecord(
-                visit_date=datetime.fromisoformat(r[0]),
-                department=r[1],
-                chief_complaint=r[2],
-                conclusion=r[3],
+                visit_date=datetime.fromisoformat(visit_date),
+                department=department,
+                chief_complaint=chief_complaint,
+                conclusion=conclusion,
             )
-            for r in rows
+            for visit_date, department, chief_complaint, conclusion in rows
         ]
 
         return profile
@@ -150,6 +154,7 @@ async def add_visit_record(user_id: str, record: VisitRecord) -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_tables(db)
+        # 问诊记录写入数据库
         await db.execute("""
             INSERT INTO visit_records (user_id, visit_date, department, chief_complaint, conclusion)
             VALUES (?, ?, ?, ?, ?)

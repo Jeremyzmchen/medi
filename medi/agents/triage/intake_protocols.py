@@ -398,7 +398,7 @@ def resolve_intake_plan(
 ) -> ResolvedIntakePlan:
     text = _conversation_text(messages)
     protocol = _protocol_by_id(fixed_protocol_id) if fixed_protocol_id else _match_protocol(text)
-    overlays = _match_overlays(text, health_profile)
+    overlays = _match_overlays(text, health_profile)    # 叠加规则：老人/小孩/孕妇/...
 
     required_fields = _unique(
         protocol.required_fields,

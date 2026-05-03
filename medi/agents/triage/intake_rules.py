@@ -84,9 +84,11 @@ def extract_deterministic_facts(
     protocol_id: str | None = None,
 ) -> list[dict]:
     """从用户原文里抽取高置信度事实。"""
-    text = _user_text(messages)
+    message_list = list(messages)
+    text = _user_text(message_list)
     facts: list[dict] = []
     facts.extend(_extract_exposure_timeline(text))
+    facts.extend(_extract_contextual_short_answers(message_list))
 
     meds, medication_evidence = _extract_medications(text)
     if meds:
@@ -126,6 +128,100 @@ def extract_deterministic_facts(
         })
 
     return facts
+
+
+def _extract_contextual_short_answers(messages: list[dict]) -> list[dict]:
+    facts: list[dict] = []
+    for assistant_text, user_text in _assistant_user_pairs(messages):
+        if not _is_negative_short_answer(user_text):
+            continue
+
+        if _asked_about_diagnosis_or_treatment(assistant_text):
+            facts.extend([
+                {
+                    "slot": "hpi.diagnostic_history",
+                    "status": "absent",
+                    "value": "未就医或检查",
+                    "evidence": user_text,
+                    "confidence": 0.95,
+                },
+                {
+                    "slot": "hpi.therapeutic_history",
+                    "status": "absent",
+                    "value": "未治疗或处理",
+                    "evidence": user_text,
+                    "confidence": 0.95,
+                },
+            ])
+        if _asked_about_disease_history(assistant_text):
+            facts.append({
+                "slot": "ph.disease_history",
+                "status": "absent",
+                "value": "否认重要既往疾病或传染病史",
+                "evidence": user_text,
+                "confidence": 0.95,
+            })
+        if _asked_about_allergy(assistant_text):
+            facts.extend([
+                {
+                    "slot": "safety.allergies",
+                    "status": "absent",
+                    "value": "无药物或食物过敏",
+                    "evidence": user_text,
+                    "confidence": 0.96,
+                },
+                {
+                    "slot": "ph.allergy_history",
+                    "status": "absent",
+                    "value": "无药物或食物过敏",
+                    "evidence": user_text,
+                    "confidence": 0.96,
+                },
+            ])
+        if _asked_about_medication(assistant_text):
+            facts.append({
+                "slot": "safety.current_medications",
+                "status": "absent",
+                "value": "未用药",
+                "evidence": user_text,
+                "confidence": 0.96,
+            })
+    return facts
+
+
+def _assistant_user_pairs(messages: list[dict]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    previous_assistant = ""
+    for message in messages:
+        role = message.get("role")
+        content = str(message.get("content") or "").strip()
+        if role == "assistant":
+            previous_assistant = content
+        elif role == "user" and previous_assistant:
+            pairs.append((previous_assistant, content))
+            previous_assistant = ""
+    return pairs
+
+
+def _is_negative_short_answer(text: str) -> bool:
+    clean = text.strip(" ，,。.!！?？")
+    return clean in {"没有", "无", "没", "否", "没有的", "没什么", "都没有"}
+
+
+def _asked_about_diagnosis_or_treatment(text: str) -> bool:
+    return any(term in text for term in ("看过医生", "看过医", "检查", "治疗", "用过药", "做过处理"))
+
+
+def _asked_about_disease_history(text: str) -> bool:
+    return any(term in text for term in ("传染病", "肺结核", "肝炎", "慢性病", "重要疾病", "既往"))
+
+
+def _asked_about_allergy(text: str) -> bool:
+    return "过敏" in text
+
+
+def _asked_about_medication(text: str) -> bool:
+    return any(term in text for term in ("用过", "用药", "服用", "吃过", "退烧药", "止咳药"))
 
 
 def _extract_exposure_timeline(text: str) -> list[dict]:

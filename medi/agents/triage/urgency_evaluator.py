@@ -84,13 +84,13 @@ async def evaluate_urgency_by_llm(
 
     if "urgent" in raw:
         level = UrgencyLevel.URGENT
-        reason = "LLM 评估为较急，建议当天就医"
+        reason = "智能分诊护士评估为较急，建议当天就医"
     elif "watchful" in raw:
         level = UrgencyLevel.WATCHFUL
-        reason = "LLM 评估可先观察，症状加重再就医"
+        reason = "智能分诊护士评估可先观察，症状加重再就医"
     else:
         level = UrgencyLevel.NORMAL
-        reason = "LLM 评估为普通，建议近期就医"
+        reason = "智能分诊护士评估为普通，建议近期就医"
 
     return UrgencyResult(level=level, reason=reason, triggered_by_rule=False)
 

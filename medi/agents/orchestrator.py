@@ -39,6 +39,31 @@ _OUT_OF_SCOPE_REPLY = (
     "如果您有身体不适需要分诊，请描述您的症状。"
 )
 
+_GREETING_REPLY = (
+    "您好！我是 Medi 分诊助手，请描述您的症状，我来帮您判断应就诊的科室和紧急程度。"
+)
+
+_NO_CONTEXT_FOLLOWUP_REPLY = (
+    "我目前还没有上一轮分诊结果可以解释。请先描述您的症状；"
+    "如果您想咨询用药或解读健康报告，也可以直接说明具体问题。"
+)
+
+_GREETING_TEXTS = {
+    "你好",
+    "您好",
+    "hi",
+    "hello",
+    "hey",
+    "嗨",
+    "哈喽",
+}
+
+
+def _is_greeting(text: str) -> bool:
+    normalized = text.strip().lower()
+    normalized = normalized.strip(" ，。！？!?,~～")
+    return normalized in {item.lower() for item in _GREETING_TEXTS}
+
 
 class Intent(Enum):
     SYMPTOM       = "symptom"
@@ -63,23 +88,25 @@ class OrchestratorAgent:
         用 gpt-4o-mini 做意图分类，返回 Intent 枚举。
 
         注入三类上下文信号：
-          1. dialogue_state — 分诊是否进行中（COLLECTING）或已完成（INIT）
+          1. dialogue_state — 分诊是否进行中（TRIAGE_GRAPH_RUNNING / INTAKE_WAITING）或已完成（INIT）
           2. symptom_summary — 当前已收集的 OPQRST 摘要
           3. 近期对话历史 — 让分类器感知上下文
         """
+        # 问诊意图
         _intake_active_states = {
-            DialogueState.COLLECTING,
-            DialogueState.GRAPH_RUNNING,
+            DialogueState.TRIAGE_GRAPH_RUNNING,
             DialogueState.INTAKE_WAITING,
         }
         if self._ctx.dialogue_state in _intake_active_states:
             return Intent.SYMPTOM
 
+        # 意图类别
         intent_list = "\n".join(
             f"- {name}: {desc}"
             for name, desc in _INTENT_DESCRIPTIONS.items()
         )
 
+        # 会话状态 (INIT, RUNNING, ESCALATING, WAITTING)
         state = self._ctx.dialogue_state.value
         state_hint = (
             "（注意：当前分诊护士正在采集病史，用户新输入是对护士问题的回答，"
@@ -88,15 +115,17 @@ class OrchestratorAgent:
             else "（注意：上一次分诊已完成，用户新输入更可能是新主诉）"
         )
 
+        # 症状上下文
         symptom_context = ""
         if symptom_summary and symptom_summary != "（无结构化信息）":
             symptom_context = f"\n\n[当前已收集的症状信息]\n{symptom_summary}"
 
+        # 对话上下文（最近10条）
         history_context = ""
         if self._ctx.messages:
             history_context = "\n\n[近期对话历史]\n" + "\n".join(
                 f"{m['role']}: {m['content'][:100]}"
-                for m in self._ctx.messages[-6:]
+                for m in self._ctx.messages[-10:]
             )
 
         response = await call_with_fallback(
@@ -137,12 +166,15 @@ class OrchestratorAgent:
     async def handle_followup(self, user_input: str) -> None:
         """处理对上一条建议的追问，带完整对话历史回答"""
 
-        # cli消费
         if not self._ctx.messages:
-            greeting = "您好！我是 Medi 分诊助手，请描述您的症状，我来帮您判断应就诊的科室和紧急程度。"
+            content = (
+                _GREETING_REPLY
+                if _is_greeting(user_input)
+                else _NO_CONTEXT_FOLLOWUP_REPLY
+            )
             await self._bus.emit(StreamEvent(
                 type=EventType.RESULT,
-                data={"content": greeting},
+                data={"content": content},
                 session_id=self._ctx.session_id,
             ))
             return

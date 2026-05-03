@@ -1,7 +1,7 @@
 """
 Hierarchical pre-consultation task tree.
 
-This module lifts the flat intake slots into the paper-style task groups:
+This module lifts the flat intake slots into pre-consultation task groups:
 T1 triage, T2 HPI collection, T3 past/safety history, and T4 chief
 complaint generation. It is intentionally derived from the existing
 FactStore and ResolvedIntakePlan so the current intake flow can adopt the

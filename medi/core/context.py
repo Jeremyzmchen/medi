@@ -1,9 +1,19 @@
 """
 UnifiedContext — 贯穿所有模块的共享上下文
 
-与 Weave 项目 的 UnifiedContext 的区别：
-- 增加 HealthProfile 作为硬约束字段
-- 增加 DialogueState 跟踪对话状态机
+模块：
+    - dialogue_state    全局状态机控制对话流程
+    - health_profile    硬约束
+    - enabled_tools     工具注册表
+    - model_config      模型配置
+    - observability     观测数据
+    - messages          会话消息 (user, assistant)
+
+方法：
+    - 添加用户、代理会话增加
+    - 会话状态转换
+    - 工具验证
+    - 硬约束prompt构建
 """
 
 from __future__ import annotations
@@ -21,14 +31,9 @@ if TYPE_CHECKING:
 class DialogueState(Enum):
     """分诊对话状态机"""
     INIT = "init"
-    COLLECTING = "collecting"       # 追问中，信息不足
-    SUFFICIENT = "sufficient"       # 信息足够，准备检索
-    SEARCHING = "searching"         # 检索知识库中
-    RESPONDING = "responding"       # 生成建议中
-    ESCALATING = "escalating"       # 发现红旗症状，立即升级
-    GRAPH_RUNNING = "graph_running" # LangGraph 分诊图执行中（多 Agent 协作）
-    INTAKE_WAITING = "intake_waiting"  # IntakeNode 已问问题，等待用户回答
-    DONE = "done"
+    ESCALATING = "escalating"                      # 发现红旗症状，立即升级
+    TRIAGE_GRAPH_RUNNING = "triage_graph_running"  # LangGraph 分诊图执行中
+    INTAKE_WAITING = "intake_waiting"              # 分诊图已追问，等待用户回答
 
 
 @dataclass
@@ -54,15 +59,20 @@ class UnifiedContext:
     """
     所有模块共享的上下文，不逐层传参。
 
-    health_profile 作为硬约束注入每次 LLM 调用，
-    区别于 Weave 项目 中记忆的软约束（洞察）语义。
+    模块：
+    - dialogue_state    全局状态机控制对话流程
+    - health_profile    硬约束
+    - enabled_tools     工具注册表
+    - model_config      模型配置
+    - observability     观测数据
+    - messages          会话消息 (user, assistant)
+    
     """
     user_id: str
     session_id: str
 
     # 对话状态机（Medi 特有）
     dialogue_state: DialogueState = DialogueState.INIT
-    follow_up_count: int = 0          # 已追问轮数，上限 3
 
     # 用户健康档案（Medi 特有，硬约束）
     health_profile: HealthProfile | None = None
@@ -80,32 +90,36 @@ class UnifiedContext:
     messages: list[dict] = field(default_factory=list)
 
     def add_user_message(self, content: str) -> None:
+        """
+        添加用户输入，并记录到对话历史中。
+        """
         self.messages.append({"role": "user", "content": content})
 
     def add_assistant_message(self, content: str) -> None:
+        """
+        添加 LLM 生成的内容，并记录到对话历史中。
+        """
         self.messages.append({"role": "assistant", "content": content})
 
     def transition(self, new_state: DialogueState) -> None:
+        """
+        对话状态机转换。
+        """
         self.dialogue_state = new_state
 
-    def can_follow_up(self) -> bool:
-        return self.follow_up_count < 3
-
-    def increment_follow_up(self) -> None:
-        self.follow_up_count += 1
-
     def has_tool(self, tool_name: str) -> bool:
+        """检查某个工具是否启用"""
         return tool_name in self.enabled_tools
 
     def build_constraint_prompt(self) -> str:
         """
         将健康档案转为硬约束 prompt 片段，注入 system prompt。
-        Weave 项目 的记忆是软约束（供参考），这里是强制约束（必须遵守）。
         """
         if self.health_profile is None:
             return ""
 
         p = self.health_profile
+        # sys-prompt header
         lines = ["[用户健康约束 - 必须严格遵守，不得忽略]"]
 
         if p.allergies:
