@@ -26,12 +26,12 @@ from typing import Annotated, TypedDict
 
 class OPQRSTStatus(TypedDict, total=False):
     """OPQRST 各字段的采集状态"""
-    onset: str          # "complete" | "partial" | "missing"
-    provocation: str
-    quality: str
-    location: str
-    severity: str
-    time_pattern: str
+    onset: str          # 发作情况, 
+    provocation: str    # 诱发与缓解因素,
+    quality: str        # 性质
+    location: str       # 部位
+    severity: str       # 严重程度
+    time_pattern: str   # 时间（持续/间歇）
     radiation: str      # 放射痛（新增，护士必问）
 
 
@@ -46,8 +46,9 @@ class CollectionStatus(TypedDict, total=False):
     opqrst: OPQRSTStatus
     associated_symptoms: str        # 伴随症状
     relevant_history: str           # 既往史（相关）
-    medications_allergies: str      # 用药 + 过敏（医疗安全必采）
+    medications_allergies: str      # 用药 + 过敏
     pattern_specific: dict          # 症状模式特异性字段，如 {"visual_aura": "missing"}
+    
     can_conclude: bool              # LLM 判断是否可结束采集
     reason: str                     # 可解释性：为什么结束/为什么继续
 
@@ -56,7 +57,7 @@ class MonitorResult(TypedDict, total=False):
     """
     Monitor 节点输出：纯打分，不做调度决策。
 
-    对应论文 4.2 节 Monitor —— 评估每个子任务的完成度，
+    对应 Monitor 角色：评估每个子任务的完成度，
     输出 0-100 分数和缺失槽位列表，由 Controller 读取后决定下一步。
     """
     score: int                          # 0-100 预诊档案价值分
@@ -72,12 +73,14 @@ class ControllerDecision(TypedDict, total=False):
     """
     Controller 节点输出：全局调度决策。
 
-    对应论文 4.2 节 Controller —— 读取 Monitor 分数，
-    选择下一个最高价值子任务，生成上下文感知问题或放行到 ClinicalNode。
+    对应 Controller 角色：读取 Monitor 分数，
+    选择下一个最高价值子任务，交给 Prompter 生成问题，或放行到 ClinicalNode。
     """
     can_finish_intake: bool             # True → 路由到 ClinicalNode
-    next_best_slot: str | None          # 选定的下一个采集槽
-    next_best_question: str | None      # 对应的上下文感知问题文本
+    next_best_task: str | None          # 选定的下一个子任务
+    task_priority_score: float | None   # 本轮任务调度分
+    task_instruction: str | None        # 给 Prompter/Inquirer 的任务说明
+    next_best_question: str | None      # Prompter 生成的问题文本
     reason: str                         # 决策理由
 
 
@@ -95,10 +98,39 @@ class IntakeReviewStatus(TypedDict, total=False):
     required_slots_covered: bool
     safety_slots_covered: bool
     high_value_missing_slots: list[str]
-    next_best_slot: str | None
+    next_best_task: str | None
+    task_instruction: str | None
     next_best_question: str | None
     reason: str
     task_tree: dict
+
+
+# ─────────────────────────────────────────────
+# Pre-consultation task orchestration state
+# ─────────────────────────────────────────────
+
+class MedicalRecord(TypedDict, total=False):
+    """Recipient 维护的结构化病历草稿。"""
+    triage: dict
+    hpi: dict
+    ph: dict
+    cc: dict
+
+
+class TaskProgress(TypedDict, total=False):
+    """Monitor 对单个子任务的完成度评估。"""
+    task_id: str
+    group_id: str
+    label: str
+    description: str
+    base_priority: int
+    critical: bool
+    score: float                  # 0.0-1.0，子任务完成度
+    status: str                   # "pending" | "partial" | "complete" | "skipped"
+    completed_requirements: list[str]
+    missing_requirements: list[str]
+    requirement_details: list[dict]
+    reason: str
 
 
 # ─────────────────────────────────────────────
@@ -107,7 +139,7 @@ class IntakeReviewStatus(TypedDict, total=False):
 
 class GeneralCondition(TypedDict, total=False):
     """
-    一般情况（论文 Table 5: General Condition）
+    一般情况（General Condition）
 
     记录患者在本次发病期间的基础功能状态，对内科、儿科、老年科尤为重要。
     全部字段可选，缺失时不影响最低预诊要求。
@@ -138,7 +170,7 @@ class SymptomData(TypedDict, total=False):
     relevant_history: str | None
     medications: list[str]
     allergies: list[str]
-    general_condition: GeneralCondition | None  # 一般情况（论文新增）
+    general_condition: GeneralCondition | None  # 一般情况
 
 
 class DepartmentResult(TypedDict):
@@ -157,7 +189,8 @@ class DifferentialDiagnosis(TypedDict):
 
 class PatientOutput(TypedDict):
     """患者侧输出：科室方向 + 紧急程度 + 就医指引"""
-    recommended_departments: list[DepartmentResult]
+    primary_department: DepartmentResult
+    alternative_departments: list[DepartmentResult]
     urgency_level: str          # "emergency" | "urgent" | "normal" | "watchful"
     urgency_reason: str
     patient_advice: str
@@ -171,6 +204,9 @@ class DoctorHPI(TypedDict):
     OLDCARTS 格式，供接诊医生在见患者前快速了解病情。
     护士采集的所有信息都汇聚于此，减少医生重复问诊。
     """
+    user_id: str
+    age: int | None
+    gender: str | None
     chief_complaint: str
     hpi_narrative: str                      # 自由文本叙述（完整 HPI）
     onset: str | None
@@ -183,12 +219,19 @@ class DoctorHPI(TypedDict):
     severity_score: str | None
     associated_symptoms: list[str]
     pertinent_negatives: list[str]          # LLM 推断的临床相关阴性症状
+    diagnostic_history: str | None          # 本次发病后已经做过的检查/诊断
+    therapeutic_history: str | None         # 本次发病后已经用过的药物/处理
+    general_condition: GeneralCondition | None
+    past_history: dict
     relevant_pmh: list[str]                 # 相关既往史
     current_medications: list[str]
     allergies: list[str]
     differential_diagnoses: list[DifferentialDiagnosis]
     recommended_workup: list[str]
+    triage_summary: dict
+    record_coverage: dict
     urgency_level: str
+    consultation_time: str
     triage_timestamp: str
     session_id: str
 
@@ -216,7 +259,12 @@ class TriageGraphState(TypedDict, total=False):
     controller_decision: ControllerDecision # Controller 节点：调度决策
     intake_review: IntakeReviewStatus       # 预诊质量门状态快照
     task_tree: dict                         # 分层预诊任务树（T1/T2/T3/T4）
-    follow_up_count: int                    # 已追问轮数（硬上限兜底）
+    medical_record: MedicalRecord           # Recipient 维护的 CC/HPI/PH/Triage 草稿
+    task_progress: dict[str, TaskProgress]  # Monitor 的子任务完成度，阈值目标 0.85
+    pending_tasks: list[str]                # 当前未完成的子任务 ID
+    current_task: str | None                # Controller 当前选中的子任务
+    task_rounds: dict[str, int]             # 各子任务已被调度/追问次数
+    triage_done: bool                       # T1 分诊任务是否已完成
     intake_complete: bool                   # True → 进入 ClinicalNode
 
     # ── Clinical reasoning ──
@@ -246,18 +294,33 @@ class TriageGraphState(TypedDict, total=False):
 def empty_symptom_data() -> SymptomData:
     return SymptomData(
         raw_descriptions=[],
-        onset=None, exposure_event=None, exposure_symptoms=None, provocation=None, quality=None,
-        region=None, severity=None, max_temperature=None, frequency=None, time_pattern=None,
-        radiation=None, accompanying=[],
-        relevant_history=None, medications=[], allergies=[],
+        onset=None, 
+        exposure_event=None, 
+        exposure_symptoms=None, 
+        provocation=None, 
+        quality=None,
+        region=None, 
+        severity=None, 
+        max_temperature=None, 
+        frequency=None, 
+        time_pattern=None,
+        radiation=None, 
+        accompanying=[],
+        relevant_history=None, 
+        medications=[], 
+        allergies=[],
         general_condition=None,
     )
 
 
 def empty_collection_status() -> CollectionStatus:
     opqrst = OPQRSTStatus(
-        onset="missing", provocation="missing", quality="missing",
-        location="missing", severity="missing", time_pattern="missing",
+        onset="missing", 
+        provocation="missing", 
+        quality="missing",
+        location="missing", 
+        severity="missing", 
+        time_pattern="missing",
         radiation="missing",
     )
     return CollectionStatus(
@@ -269,6 +332,15 @@ def empty_collection_status() -> CollectionStatus:
         pattern_specific={},
         can_conclude=False,
         reason="采集尚未开始",
+    )
+
+
+def empty_medical_record() -> MedicalRecord:
+    return MedicalRecord(
+        triage={},
+        hpi={},
+        ph={},
+        cc={},
     )
 
 

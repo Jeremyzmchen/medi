@@ -96,8 +96,8 @@ INIT
         │
       COLLECTING（Think）
         ├── NER + 关键词 + LLM 兜底提取 OPQRST
-        ├── is_sufficient()=False & can_follow_up() → LLM 生成追问 → 等待输入
-        └── is_sufficient()=True or 追问次数耗尽
+        ├── 信息不足 & assistant_count 未达上限 → LLM 生成追问 → 等待输入
+        └── 信息足够 or assistant_count 达到上限
               │
             SUFFICIENT
               │

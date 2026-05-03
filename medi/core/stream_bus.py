@@ -13,18 +13,13 @@ from typing import AsyncIterator
 
 
 class EventType(Enum):
-    STAGE_START  = "stage_start"
-    STAGE_END    = "stage_end"
-    THINKING     = "thinking"
-    OBSERVATION  = "observation"
-    CONTENT      = "content"
-    TOOL_CALL    = "tool_call"
-    TOOL_RESULT  = "tool_result"
+    STAGE_START  = "stage_start"     # 阶段开始
+    TOOL_CALL    = "tool_call"       # 工具调用事件
+    TOOL_RESULT  = "tool_result"     # 工具调用事件
     FOLLOW_UP    = "follow_up"       # 追问用户
     ESCALATION   = "escalation"      # 红旗症状，立即升级（Medi 特有）
-    RESULT       = "result"
-    ERROR        = "error"
-    DONE         = "done"
+    RESULT       = "result"          # 阶段性结果
+    ERROR        = "error"           # 异常
 
 
 @dataclass
@@ -41,7 +36,7 @@ class AsyncStreamBus:
     """
 
     def __init__(self) -> None:
-        # list: 不同消费者有自己独立的队列, 目前只有cli一个消费者
+        # list: 不同消费者有自己独立的队列, 目前有CLI, API JSON, API SSE, PDF
         self._queues: list[asyncio.Queue[StreamEvent | None]] = []
 
     def _make_queue(self) -> asyncio.Queue[StreamEvent | None]:

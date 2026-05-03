@@ -29,20 +29,23 @@ UNKNOWN_STATUSES = {"unknown", "partial", "missing", ""}
 
 @dataclass(frozen=True)
 class SlotSpec:
-    slot: str
-    label: str
-    question: str
-    priority: int
+    """定义要采集什么信息卡片"""
+    slot: str                               # e.g. hpi.onset
+    label: str                              # e.g. 发作时间
+    question: str                           # e.g. 这个症状是什么时候开始的？
+    priority: int                           # e.g. 75
 
 
 @dataclass(frozen=True)
 class ClinicalFact:
-    slot: str
-    status: str
-    value: str | None = None
-    evidence: str = ""
-    confidence: float = 0.0
-    source_turn: int | None = None
+    """记录已经采集到什么信息"""
+    slot: str                               # e.g. hpi.onset
+    status: str                             # e.g. present
+    value: str | None = None                # e.g. 昨晚开始
+    evidence: str = ""                      # e.g. 我从昨晚开始发烧
+    # 如果新事实置信度高于旧事实置信度0.15就覆盖事实
+    confidence: float = 0.0                 # e.g. 0.9
+    source_turn: int | None = None          # e.g. 2
 
     @classmethod
     def from_dict(cls, data: dict) -> "ClinicalFact | None":
@@ -75,6 +78,7 @@ class FactStore:
         self._facts: dict[str, ClinicalFact] = {}
         for fact in facts or ():
             self.merge_fact(fact)
+            # merge规则为：为空的clinical字段就补充信息，置信度更高的就替换，否则不动
 
     @classmethod
     def from_state(cls, raw_facts: list[dict] | None) -> "FactStore":
@@ -180,14 +184,24 @@ BASE_SLOT_SPECS: dict[str, SlotSpec] = {
     "hpi.location": SlotSpec("hpi.location", "部位", "您能告诉我具体是哪个部位不舒服吗？", 30),
     "hpi.severity": SlotSpec("hpi.severity", "严重程度", "这个不适大概有多严重？比如疼痛 0 到 10 分，或发热的最高体温、腹泻次数等。", 40),
     "hpi.timing": SlotSpec("hpi.timing", "时间特征", "这个症状是一直持续还是时好时坏？大概持续多久了？", 50),
+    "hpi.duration": SlotSpec("hpi.duration", "持续时间", "这种不适每次大概持续多久，或到现在一共持续了多长时间？", 51),
+    "hpi.progression": SlotSpec("hpi.progression", "病情进展", "从开始到现在，这个不适是在加重、减轻、反复，还是基本没变化？", 52),
     "hpi.character": SlotSpec("hpi.character", "症状性质", "您能描述一下这个不适的特点吗？比如疼痛性质、腹泻性状、咳嗽有无痰等。", 60),
     "hpi.aggravating_alleviating": SlotSpec("hpi.aggravating_alleviating", "加重/缓解因素", "有什么情况会让它加重或缓解吗？", 70),
     "hpi.radiation": SlotSpec("hpi.radiation", "放射/扩散", "这个不适会向其他部位扩散或放射吗？", 80),
     "hpi.associated_symptoms": SlotSpec("hpi.associated_symptoms", "伴随症状", "除了这个主要不适，还有其他伴随症状吗？", 90),
+    "hpi.diagnostic_history": SlotSpec("hpi.diagnostic_history", "检查经过", "发病后有没有做过检查？如果有，结果大概是什么？", 95),
+    "hpi.therapeutic_history": SlotSpec("hpi.therapeutic_history", "治疗经过", "发病后有没有用过药或做过处理？效果怎么样？", 96),
     "safety.current_medications": SlotSpec("safety.current_medications", "当前用药", "您目前为这个症状或平时在服用什么药物吗？没有也可以直接说没有。", 110),
     "safety.allergies": SlotSpec("safety.allergies", "过敏史", "有没有药物或食物过敏？", 111),
     "hpi.relevant_history": SlotSpec("hpi.relevant_history", "相关既往史", "以前有过类似情况，或有什么相关疾病史吗？", 140),
-    # ── 一般情况（General Condition，论文 Table 5）────────────────────────────
+    "ph.disease_history": SlotSpec("ph.disease_history", "既往疾病史", "以前有过重要疾病、慢性病，或类似的不适吗？", 141),
+    "ph.immunization_history": SlotSpec("ph.immunization_history", "疫苗接种史", "疫苗接种情况大致正常吗，近期有没有接种过疫苗？", 142),
+    "ph.surgical_history": SlotSpec("ph.surgical_history", "手术史", "以前做过手术吗？", 143),
+    "ph.trauma_history": SlotSpec("ph.trauma_history", "外伤史", "以前有过比较重要的外伤吗？", 144),
+    "ph.blood_transfusion_history": SlotSpec("ph.blood_transfusion_history", "输血史", "以前输过血或有过输血不良反应吗？", 145),
+    "ph.allergy_history": SlotSpec("ph.allergy_history", "过敏史", "有没有药物、食物或其他东西过敏？", 146),
+    # ── 一般情况（General Condition）────────────────────────────
     # 优先级 150+，不作为必填项，作为补充采集目标
     "gc.mental_status": SlotSpec("gc.mental_status", "精神状态", "精神状态怎么样，有没有嗜睡、烦躁或意识不清？", 150),
     "gc.sleep": SlotSpec("gc.sleep", "睡眠", "睡眠情况怎么样？", 155),

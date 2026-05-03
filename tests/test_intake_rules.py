@@ -1,8 +1,7 @@
 from medi.agents.triage.intake_facts import FactStore, collection_status_from_facts
 from medi.agents.triage.intake_protocols import resolve_intake_plan
 from medi.agents.triage.intake_rules import extract_deterministic_facts
-from medi.agents.triage.graph.nodes.intake_controller_node import _fallback_question, _pick_next_slot
-from medi.agents.triage.graph.nodes.intake_monitor_node import _score
+from medi.agents.triage.graph.nodes.intake_prompter_node import _fallback_question
 
 
 def _messages(text: str) -> list[dict]:
@@ -37,12 +36,9 @@ def test_ibuprofen_in_first_turn_prevents_reasking_current_medication() -> None:
     ], source_turn=1)
 
     status = collection_status_from_facts(store, plan, complete=False, reason="")
-    _, missing, _, _ = _score(store, plan, relaxed_low_value=False, clinical_missing=[])
-    next_slot = _pick_next_slot(missing, plan, clinical_missing=[])
-    question = _fallback_question(next_slot, plan, store)
+    question = _fallback_question("safety.allergies", plan, store)
 
     assert status["medications_allergies"] == "partial"
-    assert next_slot == "safety.allergies"
     assert "过敏" in question
     assert "平时在用什么药" not in question
 
@@ -57,6 +53,21 @@ def test_deterministic_rules_extract_no_drug_allergy() -> None:
 
     assert by_slot["safety.current_medications"]["value"] == "布洛芬"
     assert by_slot["safety.allergies"]["status"] == "absent"
+
+
+def test_deterministic_rules_use_question_context_for_short_negative_answers() -> None:
+    facts = extract_deterministic_facts([
+        {"role": "assistant", "content": "有没有去看过医生或者接受过任何治疗？"},
+        {"role": "user", "content": "没有"},
+        {"role": "assistant", "content": "以前有没有得过传染病，比如肺结核或肝炎等？"},
+        {"role": "user", "content": "没有"},
+    ])
+
+    by_slot = {fact["slot"]: fact for fact in facts}
+
+    assert by_slot["hpi.diagnostic_history"]["status"] == "absent"
+    assert by_slot["hpi.therapeutic_history"]["status"] == "absent"
+    assert by_slot["ph.disease_history"]["status"] == "absent"
 
 
 def test_exposure_timeline_keeps_diving_separate_from_symptom_onset() -> None:

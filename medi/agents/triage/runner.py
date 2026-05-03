@@ -16,7 +16,9 @@ from medi.agents.triage.graph.state import (
     TriageGraphState,
     empty_symptom_data,
     empty_collection_status,
+    empty_medical_record,
 )
+from medi.agents.triage.task_definitions import initial_task_progress, task_ids
 from medi.agents.triage.urgency_evaluator import (
     evaluate_urgency_by_rules,
     UrgencyLevel,
@@ -42,11 +44,12 @@ class TriageGraphRunner:
         self._router = router or DepartmentRouter()
         self._episodic = EpisodicMemory(ctx.user_id)
         self._checkpointer = MemorySaver()
-        self._is_first_turn = True          # 第一轮需要传完整 initial_state
-        self._cached_symptom_data: dict = {}
+        self._is_first_turn = True                       # 第一轮需要传完整 initial_state
+        # 提供给意图识别agent作为上下文辅助，但是主要意图识别还是依赖于 graph state 里的 collection_status 来判断
+        self._cached_symptom_data: dict = {}             
 
     async def handle(self, user_input: str) -> None:
-        # ── Safety Gate ──
+        # 1. 前置疾病安全检查报警
         urgency = evaluate_urgency_by_rules(user_input)
         if urgency and urgency.level == UrgencyLevel.EMERGENCY:
             self._ctx.transition(DialogueState.ESCALATING)
@@ -64,9 +67,16 @@ class TriageGraphRunner:
             self.reset_graph_state()
             return
 
+        # 2. 记录用户对话
         self._ctx.add_user_message(user_input)
+
+        # 3. 存储会话id用于checkpoint恢复
         config = {"configurable": {"thread_id": self._ctx.session_id}}
+
+        # 4. 历史就诊记录prompt作为软参考，health_profile里字段才是硬约束
         history_prompt = await self._episodic.build_history_prompt()
+
+        # 5. 构图
         graph = self._build_graph(history_prompt)
 
         if self._is_first_turn:
@@ -83,7 +93,12 @@ class TriageGraphRunner:
                 requested_slots=[],
                 monitor_result={},
                 controller_decision={},
-                follow_up_count=0,
+                medical_record=empty_medical_record(),
+                task_progress=initial_task_progress(),
+                pending_tasks=task_ids(),
+                current_task=None,
+                task_rounds={},
+                triage_done=False,
                 intake_complete=False,
                 department_candidates=[],
                 urgency_level="normal",
@@ -98,15 +113,17 @@ class TriageGraphRunner:
                 error=None,
             )
             self._is_first_turn = False
+            # 用户首次会话信息
             input_data = initial_state
         else:
             # 后续轮：只传新消息，checkpointer 自动恢复其余状态
             # messages 用 operator.add reducer，此处传增量
             input_data = {"messages": [{"role": "user", "content": user_input}]}
 
-        self._ctx.transition(DialogueState.GRAPH_RUNNING)
+        self._ctx.transition(DialogueState.TRIAGE_GRAPH_RUNNING)
 
         try:
+            # 带入graphstate(config里的线程id去寻找会话id)，同时增量input_data(用户新消息)
             result = await graph.ainvoke(input_data, config=config)
             self._process_result(result)
         except Exception as e:
@@ -152,7 +169,6 @@ class TriageGraphRunner:
             router=self._router,
             smart_chain=self._ctx.model_config.smart_chain,
             fast_chain=self._ctx.model_config.fast_chain,
-            fast_model=self._ctx.model_config.fast,
             health_profile=self._ctx.health_profile,
             constraint_prompt=self._ctx.build_constraint_prompt(),
             history_prompt=history_prompt,

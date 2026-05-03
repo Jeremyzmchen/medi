@@ -133,7 +133,7 @@ data/chroma/ 持久化索引
     └── 关键词兜底时间
           "两天" → symptom_info.duration = text
     │
-    ├── is_sufficient()=False & can_follow_up() → emit(FOLLOW_UP: 追问)
+    ├── is_sufficient()=False & assistant_count 未达上限 → emit(FOLLOW_UP: 追问)
     └── is_sufficient()=True → SUFFICIENT
     │
     ▼
@@ -187,10 +187,10 @@ class UnifiedContext:
     user_id: str
     session_id: str
     dialogue_state: DialogueState   # 状态机当前状态
-    follow_up_count: int            # 已追问次数
     health_profile: HealthProfile | None  # 硬约束（Phase 2 接入）
     model_config: ModelConfig       # 模型名称配置
     enabled_tools: set[str]         # 工具权限白名单
+    messages: list[dict]            # 会话内对话历史，用 assistant 消息数判断追问轮次
 ```
 
 与 Weave 的区别：增加了 `DialogueState` 状态机和 `HealthProfile` 硬约束字段。

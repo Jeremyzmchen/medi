@@ -28,23 +28,24 @@ from medi.memory.health_profile import HealthProfile, load_profile
 
 @dataclass
 class Session:
-    session_id: str
-    ctx: UnifiedContext
-    agent: TriageGraphRunner
-    orchestrator: OrchestratorAgent
-    medication_agent: MedicationAgent
-    health_report_agent: HealthReportAgent
-    obs: ObservabilityStore
+    session_id: str                                 # 会话id
+    ctx: UnifiedContext                             # 共享上下文
+    orchestrator: OrchestratorAgent                 # 意图分类agent
+    agent: TriageGraphRunner                        # 预诊分诊agent
+    medication_agent: MedicationAgent               # 医药咨询agent
+    health_report_agent: HealthReportAgent          # 健康报告解读agent
+    obs: ObservabilityStore                         # 观测集
 
 
 # 全局 session 字典：session_id → Session
 _sessions: dict[str, Session] = {}
-
+# DepartmentRouter需要懒加载模型资源，所以提前在会话中注册
 _router = DepartmentRouter()
 
 
 async def get_or_create_session(session_id: str | None, user_id: str) -> Session:
     """
+    API调用，CLI写了一个_chat_loop()方法调用
     获取已有 session 或新建一个。
 
     首轮：session_id=None，生成新 ID，加载健康档案，初始化所有 Agent。
@@ -93,7 +94,9 @@ async def get_or_create_session(session_id: str | None, user_id: str) -> Session
 
 
 def rebind_bus(session: Session, bus: AsyncStreamBus) -> None:
-    """每轮请求开始时，给所有 Agent 换新的 Bus（旧 Bus 已关闭）"""
+    """
+    每轮请求开始时，给所有 Agent 换新的 Bus（旧 Bus 已关闭）
+    """
     session.agent._bus = bus  # TriageGraphRunner._bus
     session.orchestrator._bus = bus
     session.medication_agent._bus = bus
