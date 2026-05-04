@@ -1,15 +1,16 @@
 ﻿"""
 TriageGraphRunner
 
-每轮 handle() 调用都执行一次完整的图 invoke。
-checkpointer（MemorySaver）以 session_id 为 thread_id 跨轮保存状态，
-Intake 节点从 checkpoint 恢复 messages、clinical_facts、task_board
-和 workflow_control，每轮只问一个问题，直到信息充分后进入 ClinicalNode。
+首轮 handle() 从 intake 启动分诊图；需要追问时 inquirer_node 通过
+LangGraph interrupt 暂停图，Runner 把 interrupt payload 转成 FOLLOW_UP
+事件。用户下一条回答会通过 Command(resume=...) 回到暂停点，然后继续
+沿 inquirer -> intake 抽取新事实。
 """
 
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 from medi.agents.triage.graph.builder import build_triage_graph
 from medi.agents.triage.graph.state import (
@@ -46,6 +47,8 @@ class TriageGraphRunner:
         self._episodic = EpisodicMemory(ctx.user_id)
         self._checkpointer = MemorySaver()
         self._is_first_turn = True                       # 第一轮需要传完整 initial_state
+        self._pending_interrupt = False
+        self._pending_interrupt_payload: dict | None = None
         # 提供给意图识别 agent 作为上下文辅助。
         self._cached_symptom_summary = ""
 
@@ -80,7 +83,11 @@ class TriageGraphRunner:
         # 5. 构图
         graph = self._build_graph(history_prompt)
 
-        if self._is_first_turn:
+        if self._pending_interrupt:
+            # The graph is paused inside inquirer_node; resume hands this user
+            # answer back to the interrupt() call instead of starting a new run.
+            input_data = Command(resume=user_input)
+        elif self._is_first_turn:
             # 第一轮：传入完整 initial_state，checkpointer 创建新 thread
             initial_state = TriageGraphState(
                 session_id=self._ctx.session_id,
@@ -107,6 +114,10 @@ class TriageGraphRunner:
         try:
             # 带入graphstate(config里的线程id去寻找会话id)，同时增量input_data(用户新消息)
             result = await graph.ainvoke(input_data, config=config)
+            if await self._handle_interrupt(result):
+                return
+            self._pending_interrupt = False
+            self._pending_interrupt_payload = None
             self._process_result(result)
         except Exception as e:
             await self._emit_error(str(e))
@@ -115,6 +126,8 @@ class TriageGraphRunner:
     def reset_graph_state(self) -> None:
         self._checkpointer = MemorySaver()
         self._is_first_turn = True
+        self._pending_interrupt = False
+        self._pending_interrupt_payload = None
         self._cached_symptom_summary = ""
 
     def symptom_summary(self) -> str:
@@ -136,7 +149,43 @@ class TriageGraphRunner:
         graph.checkpointer = self._checkpointer
         return graph
 
-    def _process_result(self, result: dict) -> None:
+    async def _handle_interrupt(self, result: dict) -> bool:
+        interrupts = result.get("__interrupt__") or []
+        if not interrupts:
+            return False
+
+        payload = getattr(interrupts[0], "value", interrupts[0])
+        if not isinstance(payload, dict):
+            payload = {"question": str(payload)}
+
+        question = str(payload.get("question") or "").strip()
+        task = payload.get("task")
+        round_number = payload.get("round")
+
+        self._pending_interrupt = True
+        self._pending_interrupt_payload = payload
+        self._update_cached_symptom_summary(result)
+        self._ctx.transition(DialogueState.INTAKE_WAITING)
+
+        await self._bus.emit(StreamEvent(
+            type=EventType.STAGE_START,
+            data={"stage": "inquirer", "round": round_number},
+            session_id=self._ctx.session_id,
+        ))
+        await self._bus.emit(StreamEvent(
+            type=EventType.FOLLOW_UP,
+            data={
+                "question": question,
+                "round": round_number,
+                "task": task,
+            },
+            session_id=self._ctx.session_id,
+        ))
+        if question:
+            self._ctx.add_assistant_message(question)
+        return True
+
+    def _update_cached_symptom_summary(self, result: dict) -> None:
         if "preconsultation_record" in result or "clinical_facts" in result:
             self._cached_symptom_summary = build_symptom_summary_from_record(
                 result.get("preconsultation_record"),
@@ -144,23 +193,13 @@ class TriageGraphRunner:
                 result.get("messages") or [],
             )
 
+    def _process_result(self, result: dict) -> None:
+        self._update_cached_symptom_summary(result)
+
         # OutputNode 跑完才是真正结束
         if result.get("triage_output") is not None:
             self._ctx.transition(DialogueState.INIT)
             self.reset_graph_state()
-        elif (result.get("workflow_control") or {}).get("next_node") == "intake_wait":
-            # IntakeNode 发出追问，本轮图到 END，等待用户下一条输入
-            self._ctx.transition(DialogueState.INTAKE_WAITING)
-            # 把护士最后一条问题同步到 ctx.messages，
-            # 让 Orchestrator 的意图分类器能看到完整对话上下文
-            graph_messages = result.get("messages") or []
-            last_assistant = next(
-                (m["content"] for m in reversed(graph_messages)
-                 if m.get("role") == "assistant"),
-                None,
-            )
-            if last_assistant:
-                self._ctx.add_assistant_message(last_assistant)
 
     async def _emit_error(self, message: str) -> None:
         await self._bus.emit(StreamEvent(

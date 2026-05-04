@@ -1,9 +1,9 @@
 """
 Graph Builder
 
-每轮 graph.ainvoke 都从 intake 入口跑一次图；跨轮状态由 runner 注入的
-MemorySaver checkpointer 按 session_id/thread_id 保存和恢复，不使用 LangGraph
-interrupt/resume。
+首轮 graph.ainvoke 从 intake 入口进入；追问时 inquirer 使用 LangGraph
+interrupt 暂停图。下一轮用户回答由 runner 通过 Command(resume=...) 交还
+给 inquirer，随后沿 inquirer -> intake 重新抽取事实。
 
 流程：
 - intake：抽取并合并预诊事实
@@ -134,7 +134,9 @@ def build_triage_graph(
     )
 
     builder.add_edge("prompter", "inquirer")
-    builder.add_edge("inquirer", END)
+    # inquirer pauses with interrupt(); after Command(resume=...) it appends the
+    # patient's answer and routes back through intake for fact extraction.
+    builder.add_edge("inquirer", "intake")
     
     # 判断科室前最多再走一轮询问
     builder.add_conditional_edges(
