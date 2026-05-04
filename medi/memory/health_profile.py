@@ -24,22 +24,22 @@ DB_PATH = Path(__file__).parents[3] / "data" / "medi.db"
 
 @dataclass
 class VisitRecord:
-    """问诊记录"""
-    visit_date: datetime       # 问诊时间
-    department: str            # 部门
-    chief_complaint: str       # 主诉
-    conclusion: str            # 结论
+    visit_date: datetime
+    department: str
+    chief_complaint: str
+    conclusion: str
 
 
 @dataclass
 class HealthProfile:
-    user_id: str                                                    # 用户id
-    age: int | None = None                                          # 年龄
-    gender: str | None = None                                       # 性别
+    user_id: str
+    age: int | None = None
+    gender: str | None = None                                       # "男" / "女"
     chronic_conditions: list[str] = field(default_factory=list)     # 慢性病史
     allergies: list[str] = field(default_factory=list)              # 过敏史
     current_medications: list[str] = field(default_factory=list)    # 当前用药
     visit_history: list[VisitRecord] = field(default_factory=list)  # 分诊记录
+    updated_at: str | None = None                                   # 长期档案更新时间
 
     def is_complete(self) -> bool:
         """判断基本信息是否已填写（年龄和性别是最低要求）"""
@@ -47,7 +47,6 @@ class HealthProfile:
 
 
 async def _ensure_tables(db: aiosqlite.Connection) -> None:
-    """初始化表格，确保数据库表已存在"""
     await db.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
             user_id    TEXT PRIMARY KEY,
@@ -69,6 +68,10 @@ async def _ensure_tables(db: aiosqlite.Connection) -> None:
             conclusion     TEXT NOT NULL
         )
     """)
+    async with db.execute("PRAGMA table_info(profiles)") as cursor:
+        profile_columns = {row[1] for row in await cursor.fetchall()}
+    if "updated_at" not in profile_columns:
+        await db.execute("ALTER TABLE profiles ADD COLUMN updated_at TEXT")
     await db.commit()
 
 
@@ -77,10 +80,9 @@ async def load_profile(user_id: str) -> HealthProfile:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_tables(db)
-        
-        # 根据userId查询用户档案 
+
         async with db.execute(
-            "SELECT age, gender, chronic_conditions, allergies, current_medications "
+            "SELECT age, gender, chronic_conditions, allergies, current_medications, updated_at "
             "FROM profiles WHERE user_id = ?",
             (user_id,),
         ) as cursor:
@@ -88,9 +90,8 @@ async def load_profile(user_id: str) -> HealthProfile:
 
         if row is None:
             return HealthProfile(user_id=user_id)
-        # 解包
-        age, gender, chronic_json, allergy_json, meds_json = row
-        # 建档
+
+        age, gender, chronic_json, allergy_json, meds_json, updated_at = row
         profile = HealthProfile(
             user_id=user_id,
             age=age,
@@ -98,6 +99,7 @@ async def load_profile(user_id: str) -> HealthProfile:
             chronic_conditions=json.loads(chronic_json or "[]"),
             allergies=json.loads(allergy_json or "[]"),
             current_medications=json.loads(meds_json or "[]"),
+            updated_at=updated_at,
         )
 
         # 加载就诊记录
@@ -110,12 +112,12 @@ async def load_profile(user_id: str) -> HealthProfile:
 
         profile.visit_history = [
             VisitRecord(
-                visit_date=datetime.fromisoformat(visit_date),
-                department=department,
-                chief_complaint=chief_complaint,
-                conclusion=conclusion,
+                visit_date=datetime.fromisoformat(r[0]),
+                department=r[1],
+                chief_complaint=r[2],
+                conclusion=r[3],
             )
-            for visit_date, department, chief_complaint, conclusion in rows
+            for r in rows
         ]
 
         return profile
@@ -124,6 +126,8 @@ async def load_profile(user_id: str) -> HealthProfile:
 async def save_profile(profile: HealthProfile) -> None:
     """保存或更新用户档案"""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    updated_at = datetime.now().isoformat()
+    profile.updated_at = updated_at
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_tables(db)
         await db.execute("""
@@ -144,7 +148,7 @@ async def save_profile(profile: HealthProfile) -> None:
             json.dumps(profile.chronic_conditions, ensure_ascii=False),
             json.dumps(profile.allergies, ensure_ascii=False),
             json.dumps(profile.current_medications, ensure_ascii=False),
-            datetime.now().isoformat(),
+            updated_at,
         ))
         await db.commit()
 
@@ -154,7 +158,6 @@ async def add_visit_record(user_id: str, record: VisitRecord) -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_tables(db)
-        # 问诊记录写入数据库
         await db.execute("""
             INSERT INTO visit_records (user_id, visit_date, department, chief_complaint, conclusion)
             VALUES (?, ?, ?, ?, ?)

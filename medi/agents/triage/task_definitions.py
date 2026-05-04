@@ -4,7 +4,7 @@ Pre-consultation task definitions.
 This module models the target task decomposition: T1 triage, T2 HPI
 collection, T3 past history collection, and T4 chief complaint generation.
 Each subtask is defined by semantic requirements over the evolving
-CC/HPI/PH/Triage medical record, rather than by intake extraction fields.
+T1/T2/T3/T4 PreconsultationRecord, rather than by intake extraction fields.
 """
 
 from __future__ import annotations
@@ -57,12 +57,12 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="primary_department",
                 description="Primary department recommendation is available.",
-                record_paths=("triage.primary_department",),
+                record_paths=("t1_triage.primary_department",),
             ),
             TaskRequirement(
                 id="presenting_problem",
                 description="Patient's presenting problem is documented.",
-                record_paths=("hpi.chief_complaint", "cc.draft", "cc.generated"),
+                record_paths=("t2_hpi.chief_complaint", "t4_chief_complaint.draft", "t4_chief_complaint.generated"),
             ),
         ),
         critical=True,
@@ -77,7 +77,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="secondary_department",
                 description="Specific secondary department recommendation is available.",
-                record_paths=("triage.secondary_department",),
+                record_paths=("t1_triage.secondary_department",),
             ),
         ),
         critical=True,
@@ -92,17 +92,17 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="onset_time",
                 description="Time or period when the illness began.",
-                record_paths=("hpi.onset", "hpi.timing"),
+                record_paths=("t2_hpi.onset", "t2_hpi.timing"),
             ),
             TaskRequirement(
                 id="onset_location",
                 description="Initial or current symptom location when applicable.",
-                record_paths=("hpi.location",),
+                record_paths=("t2_hpi.location",),
             ),
             TaskRequirement(
                 id="onset_trigger",
                 description="Mode of onset, trigger, exposure, or relieving/aggravating context.",
-                record_paths=("hpi.exposure_event", "hpi.aggravating_alleviating"),
+                record_paths=("t2_hpi.exposure_event", "t2_hpi.aggravating_alleviating"),
             ),
         ),
     ),
@@ -116,27 +116,27 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="symptom_location",
                 description="Main symptom location is documented.",
-                record_paths=("hpi.location",),
+                record_paths=("t2_hpi.location",),
             ),
             TaskRequirement(
                 id="symptom_nature",
                 description="Nature or character of the main symptom is documented.",
-                record_paths=("hpi.character",),
+                record_paths=("t2_hpi.character",),
             ),
             TaskRequirement(
                 id="symptom_duration",
                 description="Duration or persistence of the main symptom is documented.",
-                record_paths=("hpi.duration", "hpi.timing"),
+                record_paths=("t2_hpi.duration", "t2_hpi.timing"),
             ),
             TaskRequirement(
                 id="symptom_severity",
                 description="Severity or quantified intensity is documented.",
-                record_paths=("hpi.severity", "hpi.specific.max_temperature", "hpi.specific.frequency"),
+                record_paths=("t2_hpi.severity", "t2_hpi.specific.max_temperature", "t2_hpi.specific.frequency"),
             ),
             TaskRequirement(
                 id="aggravating_relieving",
                 description="Aggravating or relieving factors are documented.",
-                record_paths=("hpi.aggravating_alleviating",),
+                record_paths=("t2_hpi.aggravating_alleviating",),
             ),
         ),
     ),
@@ -150,12 +150,12 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="chronology",
                 description="Symptom chronology or time pattern is documented.",
-                record_paths=("hpi.timing", "hpi.onset"),
+                record_paths=("t2_hpi.timing", "t2_hpi.onset"),
             ),
             TaskRequirement(
                 id="progression",
                 description="Progression or evolution of illness is documented.",
-                record_paths=("hpi.progression",),
+                record_paths=("t2_hpi.progression",),
             ),
         ),
     ),
@@ -169,7 +169,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="associated_symptoms",
                 description="Associated symptoms or relevant negatives are documented.",
-                record_paths=("hpi.associated_symptoms", "hpi.pertinent_negatives"),
+                record_paths=("t2_hpi.associated_symptoms", "t2_hpi.pertinent_negatives"),
             ),
         ),
     ),
@@ -183,7 +183,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="diagnostic_or_treatment_history",
                 description="Post-onset examinations, treatments, or response are documented if applicable.",
-                record_paths=("hpi.diagnostic_history", "hpi.therapeutic_history"),
+                record_paths=("t2_hpi.diagnostic_history", "t2_hpi.therapeutic_history"),
             ),
         ),
     ),
@@ -198,26 +198,26 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
                 id="mental_status",
                 description="Mental state or responsiveness is documented.",
                 record_paths=(
-                    "hpi.general_condition.mental_status",
-                    "hpi.specific.mental_status",
+                    "t2_hpi.general_condition.mental_status",
+                    "t2_hpi.specific.mental_status",
                 ),
             ),
             TaskRequirement(
                 id="intake_urination",
                 description="Intake, eating, drinking, or urination status is documented.",
                 record_paths=(
-                    "hpi.general_condition.urination",
-                    "hpi.specific.intake_urination",
+                    "t2_hpi.general_condition.urination",
+                    "t2_hpi.specific.intake_urination",
                 ),
             ),
             TaskRequirement(
                 id="daily_function",
                 description="Sleep, appetite, bowel function, or weight change is documented when relevant.",
                 record_paths=(
-                    "hpi.general_condition.sleep",
-                    "hpi.general_condition.appetite",
-                    "hpi.general_condition.bowel",
-                    "hpi.general_condition.weight_change",
+                    "t2_hpi.general_condition.sleep",
+                    "t2_hpi.general_condition.appetite",
+                    "t2_hpi.general_condition.bowel",
+                    "t2_hpi.general_condition.weight_change",
                 ),
             ),
         ),
@@ -232,7 +232,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="disease_history",
                 description="Past illnesses or relevant medical history are documented.",
-                record_paths=("ph.disease_history", "hpi.relevant_history"),
+                record_paths=("t3_background.disease_history", "t2_hpi.relevant_history"),
             ),
         ),
     ),
@@ -246,7 +246,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="immunization_history",
                 description="Vaccination history is documented.",
-                record_paths=("ph.immunization_history",),
+                record_paths=("t3_background.immunization_history",),
             ),
         ),
     ),
@@ -260,7 +260,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="surgical_or_trauma_history",
                 description="Surgical or trauma history is documented.",
-                record_paths=("ph.surgical_history", "ph.trauma_history"),
+                record_paths=("t3_background.surgical_history", "t3_background.trauma_history"),
             ),
         ),
     ),
@@ -274,7 +274,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="blood_transfusion_history",
                 description="Blood transfusion history and reactions are documented.",
-                record_paths=("ph.blood_transfusion_history",),
+                record_paths=("t3_background.blood_transfusion_history",),
             ),
         ),
     ),
@@ -288,7 +288,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="allergy_history",
                 description="Food or drug allergy history is documented.",
-                record_paths=("ph.allergy_history",),
+                record_paths=("t3_background.allergy_history",),
             ),
         ),
         critical=True,
@@ -303,7 +303,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="current_medications",
                 description="Current medication use is documented or explicitly denied.",
-                record_paths=("ph.current_medications",),
+                record_paths=("t3_background.current_medications",),
             ),
         ),
         critical=True,
@@ -318,7 +318,7 @@ TASK_SPECS: tuple[PreconsultationTaskSpec, ...] = (
             TaskRequirement(
                 id="generated_chief_complaint",
                 description="Concise chief complaint is generated.",
-                record_paths=("cc.generated",),
+                record_paths=("t4_chief_complaint.generated",),
             ),
         ),
     ),

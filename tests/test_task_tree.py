@@ -1,4 +1,4 @@
-from medi.agents.triage.intake_facts import FactStore
+﻿from medi.agents.triage.clinical_facts import ClinicalFactStore
 from medi.agents.triage.intake_protocols import resolve_intake_plan
 from medi.agents.triage.task_tree import build_intake_task_tree, slot_task_priority
 
@@ -7,8 +7,8 @@ def _plan(text: str):
     return resolve_intake_plan([{"role": "user", "content": text}])
 
 
-def _store(*facts: dict) -> FactStore:
-    store = FactStore()
+def _store(*facts: dict) -> ClinicalFactStore:
+    store = ClinicalFactStore()
     store.merge_items(facts, source_turn=1)
     return store
 

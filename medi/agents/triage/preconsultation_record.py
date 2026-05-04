@@ -1,18 +1,21 @@
 """
-Structured medical record projection for the pre-consultation flow.
+PreconsultationRecord projection for the pre-consultation flow.
 
-The Recipient role keeps an evolving CC/HPI/PH/Triage draft across dialogue
-turns. The current implementation derives that draft from FactStore so the
-record stays deterministic and evidence-linked while the graph still uses the
-existing intake node.
+This module turns accumulated ClinicalFacts into a structured, evidence-linked
+record for the current Encounter. It is not the official medical record; it is
+the pre-consultation view used by task scoring, follow-up prompts, and doctor
+handoff output.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 
-from medi.agents.triage.intake_facts import ClinicalFact, FactStore
+from medi.agents.triage.clinical_facts import ClinicalFact, ClinicalFactStore
 from medi.agents.triage.intake_protocols import ResolvedIntakePlan
+
+
+PRECONSULTATION_RECORD_SCHEMA_VERSION = "preconsultation_record.v1"
 
 
 TRIAGE_DEPARTMENT_HINTS: dict[str, tuple[str, str]] = {
@@ -60,7 +63,7 @@ GENERAL_CONDITION_SLOT_FIELDS: dict[str, str] = {
     "specific.intake_urination": "urination",
 }
 
-PAST_HISTORY_SLOT_FIELDS: dict[str, str] = {
+BACKGROUND_SLOT_FIELDS: dict[str, str] = {
     "ph.disease_history": "disease_history",
     "ph.immunization_history": "immunization_history",
     "ph.surgical_history": "surgical_history",
@@ -73,16 +76,19 @@ PAST_HISTORY_SLOT_FIELDS: dict[str, str] = {
 }
 
 
-def update_medical_record(
+def update_preconsultation_record(
     current: dict | None,
     *,
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
 ) -> dict:
-    """Build an evidence-linked medical record snapshot from accumulated facts."""
+    """Build an evidence-linked pre-consultation record from accumulated facts."""
     record = _base_record(current)
 
-    record["triage"].update({
+    record["meta"].setdefault("schema_version", PRECONSULTATION_RECORD_SCHEMA_VERSION)
+    record["meta"].setdefault("source", "clinical_facts")
+
+    record["t1_triage"].update({
         "protocol_id": plan.protocol_id,
         "protocol_label": plan.protocol_label,
         "overlay_ids": plan.overlay_ids,
@@ -90,46 +96,62 @@ def update_medical_record(
     _update_triage_hint(record, plan)
 
     for slot, field in HPI_SLOT_FIELDS.items():
-        _copy_fact(store, record["hpi"], field, slot)
+        _copy_fact(store, record["t2_hpi"], field, slot)
 
     for slot, field in GENERAL_CONDITION_SLOT_FIELDS.items():
-        _copy_fact(store, record["hpi"]["general_condition"], field, slot)
+        _copy_fact(store, record["t2_hpi"]["general_condition"], field, slot)
 
     for key, label in plan.pattern_required:
         _copy_fact(
             store,
-            record["hpi"]["specific"],
+            record["t2_hpi"]["specific"],
             key,
             f"specific.{key}",
             label=label,
         )
 
-    for slot, field in PAST_HISTORY_SLOT_FIELDS.items():
-        _copy_fact(store, record["ph"], field, slot)
+    for slot, field in BACKGROUND_SLOT_FIELDS.items():
+        _copy_fact(store, record["t3_background"], field, slot)
 
     chief_complaint = store.get("hpi.chief_complaint")
     if chief_complaint is not None:
-        record["cc"]["source"] = _fact_payload(chief_complaint)
+        record["t4_chief_complaint"]["source"] = _fact_payload(chief_complaint)
         if chief_complaint.value:
-            record["cc"]["draft"] = chief_complaint.value
+            record["t4_chief_complaint"]["draft"] = chief_complaint.value
         else:
-            record["cc"].setdefault("draft", "")
+            record["t4_chief_complaint"].setdefault("draft", "")
 
     generated_cc = _generate_chief_complaint(record)
-    if generated_cc and not _payload_value(record["cc"].get("generated")):
-        record["cc"]["generated"] = generated_cc
+    if generated_cc and not _payload_value(record["t4_chief_complaint"].get("generated")):
+        record["t4_chief_complaint"]["generated"] = generated_cc
 
     return record
 
 
 def _base_record(current: dict | None) -> dict:
     record = deepcopy(current) if current else {}
-    record.setdefault("triage", {})
-    record.setdefault("hpi", {})
-    record.setdefault("ph", {})
-    record.setdefault("cc", {})
-    record["hpi"].setdefault("general_condition", {})
-    record["hpi"].setdefault("specific", {})
+    record = _migrate_legacy_sections(record)
+    record.setdefault("meta", {})
+    record.setdefault("t1_triage", {})
+    record.setdefault("t2_hpi", {})
+    record.setdefault("t3_background", {})
+    record.setdefault("t4_chief_complaint", {})
+    record["t2_hpi"].setdefault("general_condition", {})
+    record["t2_hpi"].setdefault("specific", {})
+    return record
+
+
+def _migrate_legacy_sections(record: dict) -> dict:
+    """Accept old in-memory checkpoints while projecting into the new shape."""
+    legacy_map = {
+        "triage": "t1_triage",
+        "hpi": "t2_hpi",
+        "ph": "t3_background",
+        "cc": "t4_chief_complaint",
+    }
+    for old_key, new_key in legacy_map.items():
+        if old_key in record and new_key not in record:
+            record[new_key] = record.pop(old_key)
     return record
 
 
@@ -138,7 +160,7 @@ def _update_triage_hint(record: dict, plan: ResolvedIntakePlan) -> None:
         plan.protocol_id,
         TRIAGE_DEPARTMENT_HINTS["generic_opqrst"],
     )
-    record["triage"].setdefault(
+    record["t1_triage"].setdefault(
         "primary_department",
         {
             "department": primary,
@@ -146,7 +168,7 @@ def _update_triage_hint(record: dict, plan: ResolvedIntakePlan) -> None:
             "reason": f"根据当前预问诊主题初步判断为{primary}",
         },
     )
-    record["triage"].setdefault(
+    record["t1_triage"].setdefault(
         "secondary_department",
         {
             "department": secondary,
@@ -157,7 +179,7 @@ def _update_triage_hint(record: dict, plan: ResolvedIntakePlan) -> None:
 
 
 def _generate_chief_complaint(record: dict) -> str:
-    hpi = record.get("hpi") or {}
+    hpi = record.get("t2_hpi") or {}
     complaint = _payload_value(hpi.get("chief_complaint"))
     if not complaint:
         return ""
@@ -172,7 +194,7 @@ def _generate_chief_complaint(record: dict) -> str:
 
 
 def _copy_fact(
-    store: FactStore,
+    store: ClinicalFactStore,
     target: dict,
     field: str,
     slot: str,

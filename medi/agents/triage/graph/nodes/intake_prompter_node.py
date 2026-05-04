@@ -1,4 +1,4 @@
-"""
+﻿"""
 IntakePrompterNode - task-focused follow-up question generation.
 
 This node reads the task selected by Controller and turns it into one natural
@@ -8,18 +8,20 @@ not part of the Controller contract.
 
 from __future__ import annotations
 
-import json
 import sys
 
 from medi.agents.triage.graph.state import TriageGraphState
-from medi.agents.triage.intake_facts import (
+from medi.agents.triage.clinical_facts import (
     BASE_SLOT_SPECS,
-    FactStore,
-    slot_label,
+    ClinicalFactStore,
 )
 from medi.agents.triage.intake_protocols import (
     ResolvedIntakePlan,
     resolve_intake_plan,
+)
+from medi.agents.triage.prompts.intake_prompter import (
+    PROMPTER_SYSTEM_PROMPT,
+    build_prompter_input,
 )
 from medi.agents.triage.task_definitions import TASK_BY_ID
 from medi.core.llm_client import call_with_fallback
@@ -56,25 +58,12 @@ _TASK_FALLBACK_QUESTIONS: dict[str, str] = {
     "T3_CURRENT_MEDICATIONS": "孩子这两天有没有用过退烧药、止咳药或其他药？如果完全没用药，也可以直接说没有。",
 }
 
-_PROMPTER_SYSTEM = """你是一位专业的预诊护士，正在通过对话为患者做就诊前信息采集。
-
-你的任务：根据当前选中的采集任务、已知患者信息和对话历史，生成**一个**自然、专业的追问。
-
-要求：
-- 只问一个问题，不要一次问多个
-- 围绕当前采集任务提问，不要向患者暴露任务编号或技术字段名
-- 语气温和、有共情，像真正的护士说话
-- 如果患者上一轮的回答相关但不完整，先承认他说的，再追问缺失部分
-- 不要给出诊断、建议或安慰
-- 用中文回答，直接输出问题文本，不要有任何前缀或解释
-"""
-
 
 async def intake_prompter_node(
     state: TriageGraphState,
     bus: AsyncStreamBus,
     fast_chain: list,
-    health_profile=None,
+    profile_snapshot=None,
     obs=None,
 ) -> dict:
     """Generate the follow-up question for the task chosen by Controller."""
@@ -89,11 +78,12 @@ async def intake_prompter_node(
     ))
 
     fixed_protocol_id = _locked_protocol_id(state)
-    plan = resolve_intake_plan(messages, health_profile, fixed_protocol_id=fixed_protocol_id)
-    store = FactStore.from_state(state.get("intake_facts"))
-    decision = dict(state.get("controller_decision") or {})
+    plan = resolve_intake_plan(messages, profile_snapshot, fixed_protocol_id=fixed_protocol_id)
+    store = ClinicalFactStore.from_state(state.get("clinical_facts"))
+    task_board = dict(state.get("task_board") or {})
+    decision = dict(task_board.get("controller") or {})
 
-    task_id = decision.get("next_best_task") or state.get("current_task")
+    task_id = decision.get("next_best_task") or task_board.get("current_task")
     task_instruction = decision.get("task_instruction") or _task_instruction(task_id)
 
     question = await _llm_generate_question(
@@ -101,8 +91,8 @@ async def intake_prompter_node(
         task_instruction=task_instruction,
         plan=plan,
         store=store,
-        medical_record=state.get("medical_record") or {},
-        task_progress=state.get("task_progress") or {},
+        preconsultation_record=state.get("preconsultation_record") or {},
+        task_progress=task_board.get("progress") or {},
         messages=messages,
         fast_chain=fast_chain,
         bus=bus,
@@ -111,6 +101,7 @@ async def intake_prompter_node(
     )
 
     decision["next_best_question"] = question
+    task_board["controller"] = decision
 
     print(
         f"[prompter] task={task_id}",
@@ -118,8 +109,12 @@ async def intake_prompter_node(
     )
 
     return {
-        "controller_decision": decision,
-        "next_node": "inquirer",
+        "task_board": task_board,
+        "workflow_control": {
+            "next_node": "inquirer",
+            "intake_complete": False,
+            "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+        },
     }
 
 
@@ -128,8 +123,8 @@ async def _llm_generate_question(
     task_id: str | None,
     task_instruction: str | None,
     plan: ResolvedIntakePlan,
-    store: FactStore,
-    medical_record: dict,
+    store: ClinicalFactStore,
+    preconsultation_record: dict,
     task_progress: dict[str, dict],
     messages: list[dict],
     fast_chain: list,
@@ -137,12 +132,12 @@ async def _llm_generate_question(
     session_id: str,
     obs=None,
 ) -> str:
-    user_prompt = _build_prompter_input(
+    user_prompt = build_prompter_input(
         task_id=task_id,
         task_instruction=task_instruction,
         plan=plan,
         store=store,
-        medical_record=medical_record,
+        preconsultation_record=preconsultation_record,
         task_progress=task_progress,
         messages=messages,
     )
@@ -154,7 +149,7 @@ async def _llm_generate_question(
             obs=obs,
             call_type="intake_prompter",
             messages=[
-                {"role": "system", "content": _PROMPTER_SYSTEM},
+                {"role": "system", "content": PROMPTER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=120,
@@ -169,61 +164,10 @@ async def _llm_generate_question(
     return _fallback_question(None, plan, store, task_id=task_id)
 
 
-def _build_prompter_input(
-    *,
-    task_id: str | None,
-    task_instruction: str | None,
-    plan: ResolvedIntakePlan,
-    store: FactStore,
-    medical_record: dict,
-    task_progress: dict[str, dict],
-    messages: list[dict],
-) -> str:
-    known_facts = store.prompt_context()
-    recent_messages = messages[-6:] if len(messages) > 6 else messages
-    conv_lines = []
-    for m in recent_messages:
-        role = "患者" if m.get("role") == "user" else "护士"
-        content = str(m.get("content", "")).strip()
-        if content:
-            conv_lines.append(f"{role}：{content}")
-    conv_text = "\n".join(conv_lines) if conv_lines else "（对话刚开始）"
-
-    task = TASK_BY_ID.get(task_id or "")
-    task_label = task.label if task else (task_id or "当前采集任务")
-    task_desc = task.description if task else ""
-    progress = task_progress.get(task_id or "", {})
-    missing = [
-        detail.get("description") or detail.get("id")
-        for detail in progress.get("requirement_details") or []
-        if not detail.get("completed")
-    ]
-
-    record_text = json.dumps(medical_record, ensure_ascii=False, indent=2)
-    if len(record_text) > 1800:
-        record_text = record_text[:1800] + "\n..."
-
-    return f"""【当前采集任务】
-任务：{task_label}
-任务目标：{task_desc or task_instruction or "补齐医生预诊所需信息"}
-调度说明：{task_instruction or "根据当前任务完成度继续追问"}
-任务完成度：{progress.get("score", 0)}，状态：{progress.get("status", "pending")}
-当前缺口：{"；".join(missing) if missing else "由当前任务目标决定"}
-
-【当前已知患者信息】
-{known_facts}
-
-【结构化病历草稿】
-{record_text}
-
-【最近对话记录】
-{conv_text}
-
-请生成一个围绕当前采集任务的自然追问。"""
 def _fallback_question(
     slot: str | None,
     plan: ResolvedIntakePlan,
-    store: FactStore,
+    store: ClinicalFactStore,
     *,
     task_id: str | None = None,
 ) -> str:
@@ -254,7 +198,8 @@ def _task_instruction(task_id: str | None) -> str | None:
 
 
 def _locked_protocol_id(state: TriageGraphState) -> str | None:
-    protocol_id = state.get("intake_protocol_id")
+    intake_plan = state.get("intake_plan") or {}
+    protocol_id = intake_plan.get("protocol_id")
     if protocol_id and protocol_id != "generic_opqrst":
         return protocol_id
     return None

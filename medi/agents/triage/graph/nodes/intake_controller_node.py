@@ -1,7 +1,7 @@
-"""
+﻿"""
 IntakeControllerNode - global task scheduler.
 
-Controller reads Monitor's task completion scores and selects the next
+Controller reads TaskBoard task completion scores and selects the next
 subtask. It does not choose extraction fields, generate questions, or emit
 patient-facing events.
 """
@@ -15,11 +15,6 @@ from medi.agents.triage.graph.state import (
     MAX_INTAKE_ROUNDS,
     TriageGraphState,
 )
-from medi.agents.triage.intake_facts import (
-    FactStore,
-    collection_status_from_facts,
-)
-from medi.agents.triage.intake_protocols import resolve_intake_plan
 from medi.agents.triage.task_definitions import (
     TASK_BY_ID,
     TASK_COMPLETION_THRESHOLD,
@@ -35,7 +30,7 @@ CRITICAL_TASK_BONUS = 30
 async def intake_controller_node(
     state: TriageGraphState,
     bus: AsyncStreamBus,
-    health_profile=None,
+    profile_snapshot=None,
     max_rounds: int = MAX_INTAKE_ROUNDS,
 ) -> dict:
     """Select the next subtask and route to Prompter or Clinical."""
@@ -43,13 +38,11 @@ async def intake_controller_node(
     messages = state.get("messages") or []
     assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
 
-    fixed_protocol_id = _locked_protocol_id(state)
-    plan = resolve_intake_plan(messages, health_profile, fixed_protocol_id=fixed_protocol_id)
-    store = FactStore.from_state(state.get("intake_facts"))
-    monitor = state.get("monitor_result") or {}
-    task_progress = state.get("task_progress") or {}
-    pending_tasks = state.get("pending_tasks") or []
-    task_rounds = dict(state.get("task_rounds") or {})
+    task_board = dict(state.get("task_board") or {})
+    monitor = task_board.get("monitor") or {}
+    task_progress = task_board.get("progress") or {}
+    pending_tasks = task_board.get("pending_tasks") or []
+    task_rounds = dict(task_board.get("task_rounds") or {})
 
     await bus.emit(StreamEvent(
         type=EventType.STAGE_START,
@@ -83,13 +76,6 @@ async def intake_controller_node(
         task_priority_score = None
         task_instruction = None
 
-    collection_status = collection_status_from_facts(
-        store=store,
-        plan=plan,
-        complete=can_finish,
-        reason=finish_reason,
-    )
-
     decision = ControllerDecision(
         can_finish_intake=can_finish,
         next_best_task=selected_task,
@@ -106,20 +92,30 @@ async def intake_controller_node(
     )
 
     if can_finish:
-        return {
-            "collection_status": collection_status,
-            "controller_decision": decision,
+        task_board.update({
+            "controller": decision,
             "current_task": None,
-            "intake_complete": True,
-            "next_node": "clinical",
+        })
+        return {
+            "task_board": task_board,
+            "workflow_control": {
+                "next_node": "clinical",
+                "intake_complete": True,
+                "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+            },
         }
 
-    return {
-        "collection_status": collection_status,
-        "controller_decision": decision,
+    task_board.update({
+        "controller": decision,
         "current_task": selected_task,
-        "intake_complete": False,
-        "next_node": "prompter",
+    })
+    return {
+        "task_board": task_board,
+        "workflow_control": {
+            "next_node": "prompter",
+            "intake_complete": False,
+            "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+        },
     }
 
 
@@ -253,13 +249,6 @@ def _task_label(task_id: str | None) -> str:
         return "未完成任务"
     spec = TASK_BY_ID.get(task_id)
     return spec.label if spec else task_id
-
-
-def _locked_protocol_id(state: TriageGraphState) -> str | None:
-    protocol_id = state.get("intake_protocol_id")
-    if protocol_id and protocol_id != "generic_opqrst":
-        return protocol_id
-    return None
 
 
 def _safe_float(value, default: float) -> float:

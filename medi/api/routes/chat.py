@@ -1,4 +1,4 @@
-"""
+﻿"""
 聊天路由
 
 POST /chat          — 单轮对话，收集所有事件后返回完整 JSON 列表
@@ -23,7 +23,15 @@ from fastapi.responses import StreamingResponse
 
 from medi.agents.orchestrator import Intent
 from medi.api.schemas import ChatRequest, ChatResponse
-from medi.api.session_store import get_or_create_session, rebind_bus
+from medi.api.session_store import (
+    Session,
+    ensure_active_encounter,
+    get_or_create_session,
+    mark_active_encounter_completed,
+    mark_active_encounter_waiting,
+    rebind_bus,
+)
+from medi.core.encounter import EncounterIntent
 from medi.core.stream_bus import AsyncStreamBus, EventType
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -36,6 +44,17 @@ def _event_to_dict(event_type: str, content: str, session_id: str, metadata: dic
         "session_id": session_id,
         "metadata": metadata or {},
     }
+
+
+def _ensure_encounter_for_intent(session: Session, intent: Intent) -> None:
+    if intent == Intent.NEW_SYMPTOM:
+        ensure_active_encounter(session, EncounterIntent.TRIAGE, force_new=True)
+    elif intent == Intent.SYMPTOM:
+        ensure_active_encounter(session, EncounterIntent.TRIAGE)
+    elif intent == Intent.MEDICATION:
+        ensure_active_encounter(session, EncounterIntent.MEDICATION)
+    elif intent == Intent.HEALTH_REPORT:
+        ensure_active_encounter(session, EncounterIntent.HEALTH_REPORT)
 
 
 async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple[str, list[dict]]:
@@ -52,18 +71,17 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
     async def consume() -> None:
         async for event in bus.stream():
             if event.type == EventType.FOLLOW_UP:
+                mark_active_encounter_waiting(session)
                 events.append(_event_to_dict(
                     "follow_up",
                     event.data.get("question", ""),
                     session.session_id,
                 ))
             elif event.type == EventType.RESULT:
-                # 透传结构化字段：patient_output / doctor_hpi（来自 LangGraph OutputNode）
+                mark_active_encounter_completed(session)
                 metadata = {}
-                if "patient_output" in event.data:
-                    metadata["patient_output"] = event.data["patient_output"]
-                if "doctor_hpi" in event.data:
-                    metadata["doctor_hpi"] = event.data["doctor_hpi"]
+                if "triage_output" in event.data:
+                    metadata["triage_output"] = event.data["triage_output"]
                 events.append(_event_to_dict(
                     "result",
                     event.data.get("content", ""),
@@ -71,6 +89,7 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
                     metadata=metadata if metadata else None,
                 ))
             elif event.type == EventType.ESCALATION:
+                mark_active_encounter_completed(session)
                 events.append(_event_to_dict(
                     "escalation",
                     event.data.get("reason", ""),
@@ -91,6 +110,7 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
 
         symptom_summary = agent.symptom_summary()
         intent = await orchestrator.classify_intent(message, symptom_summary)
+        _ensure_encounter_for_intent(session, intent)
 
         if intent == Intent.OUT_OF_SCOPE:
             await orchestrator.handle_out_of_scope()
@@ -166,6 +186,7 @@ async def chat_stream(
 
                 symptom_summary = agent.symptom_summary()
                 intent = await orchestrator.classify_intent(message, symptom_summary)
+                _ensure_encounter_for_intent(session, intent)
 
                 if intent == Intent.OUT_OF_SCOPE:
                     await orchestrator.handle_out_of_scope()
@@ -188,13 +209,13 @@ async def chat_stream(
 
             async for event in bus.stream():
                 if event.type == EventType.FOLLOW_UP:
+                    mark_active_encounter_waiting(session)
                     payload = _event_to_dict("follow_up", event.data.get("question", ""), session.session_id)
                 elif event.type == EventType.RESULT:
+                    mark_active_encounter_completed(session)
                     sse_meta = {}
-                    if "patient_output" in event.data:
-                        sse_meta["patient_output"] = event.data["patient_output"]
-                    if "doctor_hpi" in event.data:
-                        sse_meta["doctor_hpi"] = event.data["doctor_hpi"]
+                    if "triage_output" in event.data:
+                        sse_meta["triage_output"] = event.data["triage_output"]
                     payload = _event_to_dict(
                         "result",
                         event.data.get("content", ""),
@@ -202,6 +223,7 @@ async def chat_stream(
                         metadata=sse_meta if sse_meta else None,
                     )
                 elif event.type == EventType.ESCALATION:
+                    mark_active_encounter_completed(session)
                     payload = _event_to_dict("escalation", event.data.get("reason", ""), session.session_id)
                 elif event.type == EventType.ERROR:
                     payload = _event_to_dict("error", event.data.get("message", ""), session.session_id)
@@ -229,3 +251,4 @@ async def chat_stream(
             "X-Accel-Buffering": "no",  # 关闭 nginx 缓冲，确保实时推送
         },
     )
+

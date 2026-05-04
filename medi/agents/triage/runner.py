@@ -1,10 +1,10 @@
-"""
+﻿"""
 TriageGraphRunner
 
 每轮 handle() 调用都执行一次完整的图 invoke。
 checkpointer（MemorySaver）以 session_id 为 thread_id 跨轮保存状态，
-IntakeNode 从 checkpoint 恢复 messages 和 collection_status，
-每轮只问一个问题，直到信息充分后进入 ClinicalNode。
+Intake 节点从 checkpoint 恢复 messages、clinical_facts、task_board
+和 workflow_control，每轮只问一个问题，直到信息充分后进入 ClinicalNode。
 """
 
 from __future__ import annotations
@@ -14,17 +14,18 @@ from langgraph.checkpoint.memory import MemorySaver
 from medi.agents.triage.graph.builder import build_triage_graph
 from medi.agents.triage.graph.state import (
     TriageGraphState,
-    empty_symptom_data,
-    empty_collection_status,
-    empty_medical_record,
+    empty_intake_plan,
+    empty_preconsultation_record,
+    empty_task_board,
+    empty_clinical_assessment,
+    empty_workflow_control,
 )
-from medi.agents.triage.task_definitions import initial_task_progress, task_ids
 from medi.agents.triage.urgency_evaluator import (
     evaluate_urgency_by_rules,
     UrgencyLevel,
     EMERGENCY_RESPONSE,
 )
-from medi.agents.triage.symptom_utils import format_severity_line, looks_like_temperature
+from medi.agents.triage.clinical_summary import build_symptom_summary_from_record
 from medi.agents.triage.department_router import DepartmentRouter
 from medi.core.context import UnifiedContext, DialogueState
 from medi.core.stream_bus import AsyncStreamBus, EventType, StreamEvent
@@ -45,8 +46,8 @@ class TriageGraphRunner:
         self._episodic = EpisodicMemory(ctx.user_id)
         self._checkpointer = MemorySaver()
         self._is_first_turn = True                       # 第一轮需要传完整 initial_state
-        # 提供给意图识别agent作为上下文辅助，但是主要意图识别还是依赖于 graph state 里的 collection_status 来判断
-        self._cached_symptom_data: dict = {}             
+        # 提供给意图识别 agent 作为上下文辅助。
+        self._cached_symptom_summary = ""
 
     async def handle(self, user_input: str) -> None:
         # 1. 前置疾病安全检查报警
@@ -73,7 +74,7 @@ class TriageGraphRunner:
         # 3. 存储会话id用于checkpoint恢复
         config = {"configurable": {"thread_id": self._ctx.session_id}}
 
-        # 4. 历史就诊记录prompt作为软参考，health_profile里字段才是硬约束
+        # 4. 历史就诊记录prompt作为软参考，profile_snapshot 作为本次会话的只读硬约束
         history_prompt = await self._episodic.build_history_prompt()
 
         # 5. 构图
@@ -85,32 +86,13 @@ class TriageGraphRunner:
                 session_id=self._ctx.session_id,
                 user_id=self._ctx.user_id,
                 messages=[{"role": "user", "content": user_input}],
-                symptom_data=empty_symptom_data(),
-                collection_status=empty_collection_status(),
-                intake_protocol_id="generic_opqrst",
-                intake_overlays=[],
-                intake_facts=[],
-                requested_slots=[],
-                monitor_result={},
-                controller_decision={},
-                medical_record=empty_medical_record(),
-                task_progress=initial_task_progress(),
-                pending_tasks=task_ids(),
-                current_task=None,
-                task_rounds={},
-                triage_done=False,
-                intake_complete=False,
-                department_candidates=[],
-                urgency_level="normal",
-                urgency_reason="",
-                differential_diagnoses=[],
-                risk_factors_summary="",
-                clinical_missing_slots=[],
-                next_node="intake",
-                patient_output=None,
-                doctor_hpi=None,
-                graph_iteration=0,
-                error=None,
+                intake_plan=empty_intake_plan(),
+                clinical_facts=[],
+                preconsultation_record=empty_preconsultation_record(),
+                task_board=empty_task_board(),
+                clinical_assessment=empty_clinical_assessment(),
+                triage_output=None,
+                workflow_control=empty_workflow_control(),
             )
             self._is_first_turn = False
             # 用户首次会话信息
@@ -133,35 +115,10 @@ class TriageGraphRunner:
     def reset_graph_state(self) -> None:
         self._checkpointer = MemorySaver()
         self._is_first_turn = True
-        self._cached_symptom_data = {}
+        self._cached_symptom_summary = ""
 
     def symptom_summary(self) -> str:
-        data = self._cached_symptom_data
-        if not data:
-            return ""
-        parts = []
-        if data.get("region"):
-            parts.append(f"部位：{data['region']}")
-        if data.get("time_pattern"):
-            parts.append(f"时间：{data['time_pattern']}")
-        if data.get("onset"):
-            parts.append(f"诱因：{data['onset']}")
-        if data.get("quality"):
-            parts.append(f"性质：{data['quality']}")
-        if data.get("max_temperature"):
-            parts.append(f"最高体温：{data['max_temperature']}")
-        if data.get("frequency"):
-            parts.append(f"频率/次数：{data['frequency']}")
-        if data.get("severity"):
-            severity = str(data["severity"])
-            if not (data.get("max_temperature") and looks_like_temperature(severity)):
-                parts.append(format_severity_line(severity))
-        if data.get("accompanying"):
-            parts.append(f"伴随：{', '.join(data['accompanying'])}")
-        raw = data.get("raw_descriptions") or []
-        if raw and not parts:
-            parts.append(raw[-1])
-        return "\n".join(parts) if parts else ""
+        return self._cached_symptom_summary
 
     def _build_graph(self, history_prompt: str):
         graph = build_triage_graph(
@@ -169,7 +126,7 @@ class TriageGraphRunner:
             router=self._router,
             smart_chain=self._ctx.model_config.smart_chain,
             fast_chain=self._ctx.model_config.fast_chain,
-            health_profile=self._ctx.health_profile,
+            profile_snapshot=self._ctx.profile_snapshot,
             constraint_prompt=self._ctx.build_constraint_prompt(),
             history_prompt=history_prompt,
             episodic=self._episodic,
@@ -180,14 +137,18 @@ class TriageGraphRunner:
         return graph
 
     def _process_result(self, result: dict) -> None:
-        if "symptom_data" in result:
-            self._cached_symptom_data = result.get("symptom_data") or {}
+        if "preconsultation_record" in result or "clinical_facts" in result:
+            self._cached_symptom_summary = build_symptom_summary_from_record(
+                result.get("preconsultation_record"),
+                result.get("clinical_facts"),
+                result.get("messages") or [],
+            )
 
         # OutputNode 跑完才是真正结束
-        if result.get("patient_output") is not None:
+        if result.get("triage_output") is not None:
             self._ctx.transition(DialogueState.INIT)
             self.reset_graph_state()
-        elif result.get("next_node") == "intake_wait":
+        elif (result.get("workflow_control") or {}).get("next_node") == "intake_wait":
             # IntakeNode 发出追问，本轮图到 END，等待用户下一条输入
             self._ctx.transition(DialogueState.INTAKE_WAITING)
             # 把护士最后一条问题同步到 ctx.messages，
@@ -207,3 +168,4 @@ class TriageGraphRunner:
             data={"message": f"分诊处理出错：{message}"},
             session_id=self._ctx.session_id,
         ))
+

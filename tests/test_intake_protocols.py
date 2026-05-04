@@ -1,5 +1,5 @@
-from medi.agents.triage.graph.state import check_minimum_fields, empty_collection_status
-from medi.agents.triage.graph.nodes.intake_node import _question_for_missing_fields
+from medi.agents.triage.clinical_facts import ClinicalFactStore, required_slots_for_plan
+from medi.agents.triage.graph.nodes.intake_prompter_node import _fallback_question
 from medi.agents.triage.intake_protocols import (
     resolve_intake_plan,
     question_for_missing_field,
@@ -93,34 +93,19 @@ def test_pregnancy_overlay_can_come_from_health_profile() -> None:
         current_medications = []
         allergies = []
 
-    plan = resolve_intake_plan(_messages("我有点腹痛"), health_profile=Profile())
+    plan = resolve_intake_plan(_messages("我有点腹痛"), profile_snapshot=Profile())
 
     assert "pregnancy" in plan.overlay_ids
 
 
 def test_protocol_minimum_fields_do_not_force_generic_pain_slots() -> None:
     plan = resolve_intake_plan(_messages("我发烧39度，从昨天晚上开始，吃了布洛芬退了一点"))
-    status = empty_collection_status()
-    status["chief_complaint"] = "complete"
-    status["opqrst"]["onset"] = "complete"
-    status["opqrst"]["severity"] = "complete"
-    status["opqrst"]["time_pattern"] = "complete"
-    status["medications_allergies"] = "complete"
-    status["pattern_specific"] = {
-        "max_temperature": "complete",
-        "measurement_method": "partial",
-        "antipyretics": "complete",
-        "associated_fever_symptoms": "partial",
-    }
+    slots = required_slots_for_plan(plan)
 
-    passed, missing = check_minimum_fields(
-        status,
-        required_fields=plan.required_fields,
-        required_pattern_fields=[key for key, _ in plan.pattern_required],
-    )
-
-    assert passed is True
-    assert missing == []
+    assert "specific.max_temperature" in slots
+    assert "specific.measurement_method" not in slots
+    assert "hpi.character" not in slots
+    assert "hpi.location" not in slots
 
 
 def test_pattern_missing_field_generates_protocol_question() -> None:
@@ -134,10 +119,13 @@ def test_pattern_missing_field_generates_protocol_question() -> None:
 
 def test_partial_medications_allergies_asks_allergy_only() -> None:
     plan = resolve_intake_plan(_messages("我发烧，吃了布洛芬"))
-    status = empty_collection_status()
-    status["medications_allergies"] = "partial"
+    store = ClinicalFactStore()
+    store.merge_items(
+        [{"slot": "safety.current_medications", "status": "present", "value": "布洛芬"}],
+        source_turn=1,
+    )
 
-    question = _question_for_missing_fields(["medications_allergies"], plan, status)
+    question = _fallback_question("safety.allergies", plan, store)
 
     assert "过敏" in question
     assert "目前在服用什么药物" not in question

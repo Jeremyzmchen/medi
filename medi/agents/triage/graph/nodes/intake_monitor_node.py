@@ -1,12 +1,12 @@
-"""
+﻿"""
 IntakeMonitorNode — 预诊档案质量评估节点。
 
 对应 Monitor 角色：
   只负责评估当前信息完整度，输出 0-100 分和缺失槽位列表。
   不做任何调度决策，不决定问什么、问不问——那是 Controller 的职责。
 
-输入：state（intake_facts, intake_protocol_id, requested_slots, ...）
-输出：写入 state["monitor_result"]（MonitorResult TypedDict）
+输入：state（clinical_facts, intake_plan, preconsultation_record, ...）
+输出：写入 state["task_board"]["monitor"]（MonitorResult TypedDict）
 """
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ from medi.agents.triage.graph.state import (
     MonitorResult,
     TriageGraphState,
 )
-from medi.agents.triage.intake_facts import (
-    FactStore,
-    collection_status_from_facts,
+from medi.agents.triage.clinical_facts import (
+    ClinicalFactStore,
     required_slots_for_plan,
 )
 from medi.agents.triage.intake_protocols import (
@@ -64,10 +63,10 @@ CRITICAL_OVERLAY_PATTERN_KEYS: dict[str, tuple[str, ...]] = {
 async def intake_monitor_node(
     state: TriageGraphState,
     bus: AsyncStreamBus,
-    health_profile=None,
+    profile_snapshot=None,
 ) -> dict:
     """
-    评估预诊档案当前质量，写入 monitor_result。
+    评估预诊档案当前质量，写入 TaskBoard.monitor。
     不发出追问，不决定下一步——由 ControllerNode 读取结果后决策。
     """
     session_id = state["session_id"]
@@ -75,8 +74,8 @@ async def intake_monitor_node(
     assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
 
     fixed_protocol_id = _locked_protocol_id(state)
-    plan = resolve_intake_plan(messages, health_profile, fixed_protocol_id=fixed_protocol_id)
-    store = FactStore.from_state(state.get("intake_facts"))
+    plan = resolve_intake_plan(messages, profile_snapshot, fixed_protocol_id=fixed_protocol_id)
+    store = ClinicalFactStore.from_state(state.get("clinical_facts"))
 
     await bus.emit(StreamEvent(
         type=EventType.STAGE_START,
@@ -85,8 +84,9 @@ async def intake_monitor_node(
     ))
 
     relaxed_low_value = assistant_count >= 5
+    clinical_assessment = state.get("clinical_assessment") or {}
     clinical_missing = [
-        slot for slot in (state.get("clinical_missing_slots") or [])
+        slot for slot in (clinical_assessment.get("missing_slots") or [])
         if not store.is_answered(slot)
     ]
 
@@ -100,7 +100,7 @@ async def intake_monitor_node(
         clinical_missing_slots=clinical_missing,
     )
     task_progress, pending_tasks = evaluate_task_progress(
-        medical_record=state.get("medical_record"),
+        preconsultation_record=state.get("preconsultation_record"),
     )
     required_covered = _required_slots_covered(store, plan, relaxed_low_value)
     doctor_ready = _has_core_doctor_summary(store, plan, relaxed_low_value)
@@ -117,27 +117,27 @@ async def intake_monitor_node(
         reason=_score_reason(score, red_flags_checked, safety_covered, plan),
     )
 
-    collection_status = collection_status_from_facts(
-        store=store,
-        plan=plan,
-        complete=False,
-        reason="等待 Controller 调度决策",
-    )
-
     print(
         f"[monitor] score={score} red_flags={red_flags_checked} "
         f"protocol={plan.protocol_id} missing={result['high_value_missing_slots']}",
         file=sys.stderr,
     )
 
-    return {
-        "monitor_result": result,
-        "task_tree": task_tree,
-        "task_progress": task_progress,
+    task_board = dict(state.get("task_board") or {})
+    task_board.update({
+        "monitor": result,
+        "tree": task_tree,
+        "progress": task_progress,
         "pending_tasks": pending_tasks,
-        "triage_done": _triage_done(task_progress),
-        "collection_status": collection_status,
-        "next_node": "controller",
+    })
+
+    return {
+        "task_board": task_board,
+        "workflow_control": {
+            "next_node": "controller",
+            "intake_complete": False,
+            "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+        },
     }
 
 
@@ -146,7 +146,7 @@ async def intake_monitor_node(
 # ─────────────────────────────────────────────
 
 def _score(
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
     relaxed_low_value: bool,
     clinical_missing: list[str],
@@ -239,7 +239,7 @@ def _score(
     return score, missing, red_flags_checked, safety_covered
 
 
-def _has_severity_or_quantifier(store: FactStore, plan: ResolvedIntakePlan) -> bool:
+def _has_severity_or_quantifier(store: ClinicalFactStore, plan: ResolvedIntakePlan) -> bool:
     if store.is_answered("hpi.severity"):
         return True
     for key in ("max_temperature", "frequency"):
@@ -257,7 +257,7 @@ def _severity_slot_for_plan(plan: ResolvedIntakePlan) -> str:
     return "hpi.severity"
 
 
-def _has_associated_context(store: FactStore, plan: ResolvedIntakePlan) -> bool:
+def _has_associated_context(store: ClinicalFactStore, plan: ResolvedIntakePlan) -> bool:
     if store.is_answered("hpi.associated_symptoms"):
         return True
     for key, _ in plan.pattern_required:
@@ -292,7 +292,7 @@ def _severity_required(plan: ResolvedIntakePlan, relaxed_low_value: bool) -> boo
 
 
 def _required_slots_covered(
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
     relaxed_low_value: bool,
 ) -> bool:
@@ -309,7 +309,7 @@ def _required_slots_covered(
 
 
 def _has_core_doctor_summary(
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
     relaxed_low_value: bool,
 ) -> bool:
@@ -336,17 +336,11 @@ def _score_reason(
 
 
 def _locked_protocol_id(state: TriageGraphState) -> str | None:
-    protocol_id = state.get("intake_protocol_id")
+    intake_plan = state.get("intake_plan") or {}
+    protocol_id = intake_plan.get("protocol_id")
     if protocol_id and protocol_id != "generic_opqrst":
         return protocol_id
     return None
-
-
-def _triage_done(task_progress: dict[str, dict]) -> bool:
-    return all(
-        task_progress.get(task_id, {}).get("status") == "complete"
-        for task_id in ("T1_PRIMARY_DEPARTMENT", "T1_SECONDARY_DEPARTMENT")
-    )
 
 
 def _unique(items: list[str]) -> list[str]:

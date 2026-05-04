@@ -2,21 +2,17 @@
 临床推理工具
 
 ClinicalNode 使用的工具：
-  - evaluate_risk_factors：结合 HealthProfile 评估患者特异性风险因子
-  - format_differential_prompt：生成鉴别诊断 LLM prompt
+  - evaluate_risk_factors：结合 ProfileSnapshot 评估患者特异性风险因子
 """
 
 from __future__ import annotations
 
-from medi.agents.triage.graph.state import SymptomData, DifferentialDiagnosis
-
-
 def evaluate_risk_factors(
-    symptom_data: SymptomData,
-    health_profile,  # HealthProfile | None
+    symptom_summary: str,
+    profile_snapshot,
 ) -> dict:
     """
-    将 HealthProfile 中的慢性病史、用药史与当前症状进行交叉分析，
+    将 ProfileSnapshot 中的慢性病史、用药史与当前症状进行交叉分析，
     返回患者特异性风险因子摘要。
 
     这比单纯注入 constraint_prompt 更精准：
@@ -29,24 +25,22 @@ def evaluate_risk_factors(
             "elevated_urgency": bool  # 是否因风险因子应提升紧急程度
         }
     """
-    if health_profile is None:
+    if profile_snapshot is None:
         return {
             "risk_factors": [],
             "risk_summary": "",
             "elevated_urgency": False,
         }
 
-    region = symptom_data.get("region") or ""
-    descriptions = " ".join(symptom_data.get("raw_descriptions") or [])
-    full_text = descriptions + " " + region
+    full_text = symptom_summary or ""
 
     risk_factors: list[str] = []
     elevated_urgency = False
 
-    conditions = getattr(health_profile, "chronic_conditions", []) or []
-    medications = getattr(health_profile, "current_medications", []) or []
-    age = getattr(health_profile, "age", None)
-    gender = getattr(health_profile, "gender", None)
+    conditions = getattr(profile_snapshot, "chronic_conditions", []) or []
+    medications = getattr(profile_snapshot, "current_medications", []) or []
+    age = getattr(profile_snapshot, "age", None)
+    gender = getattr(profile_snapshot, "gender", None)
 
     # 心血管风险
     cardiac_keywords = ["胸", "心", "气短", "呼吸"]
@@ -80,7 +74,7 @@ def evaluate_risk_factors(
                 elevated_urgency = True
 
     # 药物过敏相关
-    allergies = getattr(health_profile, "allergies", []) or []
+    allergies = getattr(profile_snapshot, "allergies", []) or []
     if allergies:
         risk_factors.append(f"已知过敏史：{', '.join(allergies)}（用药建议需规避）")
 
@@ -96,52 +90,3 @@ def evaluate_risk_factors(
         "elevated_urgency": elevated_urgency,
     }
 
-
-def build_differential_prompt(
-    symptom_summary: str,
-    department_candidates: list[dict],
-    risk_factors_summary: str,
-    constraint_prompt: str,
-) -> str:
-    """
-    构建鉴别诊断 LLM prompt。
-
-    要求 LLM 以 JSON 格式输出 differential_diagnoses 列表，
-    每项包含 condition / likelihood / reasoning / supporting_symptoms / risk_factors。
-    """
-    dept_list = "\n".join(
-        f"- {c['department']}（置信度 {c['confidence']:.0%}）"
-        for c in department_candidates[:3]
-    )
-
-    risk_section = f"\n[患者风险因子]\n{risk_factors_summary}" if risk_factors_summary else ""
-
-    return f"""你是一位经验丰富的临床医生，正在进行初步鉴别诊断分析。
-
-{constraint_prompt}
-
-[症状摘要]
-{symptom_summary}
-
-[科室检索结果]
-{dept_list}
-{risk_section}
-
-请基于以上信息，给出 2-4 个鉴别诊断，严格按以下 JSON 格式输出（不要输出其他内容）：
-
-{{
-  "differential_diagnoses": [
-    {{
-      "condition": "疑似诊断名称",
-      "likelihood": "high|medium|low",
-      "reasoning": "推理依据（1-2句）",
-      "supporting_symptoms": ["支持该诊断的症状1", "症状2"],
-      "risk_factors": ["患者特异性风险因子（如有）"]
-    }}
-  ]
-}}
-
-注意：
-- likelihood 只能是 high / medium / low 三个值之一
-- 按可能性从高到低排列
-- 不做最终诊断，只做初步鉴别分析供医生参考"""

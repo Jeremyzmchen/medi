@@ -6,7 +6,7 @@ DietAgent — 膳食建议 Agent
 
 设计要点：
 - 接收结构化的异常指标，而非自由文本，避免信息丢失
-- 约束：同时注入 HealthProfile（过敏史、慢性病、当前用药）
+- 约束：同时注入 ProfileSnapshot（过敏史、慢性病、当前用药）
 - 输出也是结构化 DietPlan，供 ScheduleAgent 直接使用
 """
 

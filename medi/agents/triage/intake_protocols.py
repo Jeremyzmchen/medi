@@ -393,12 +393,12 @@ FIELD_QUESTIONS: dict[str, str] = {
 
 def resolve_intake_plan(
     messages: Iterable[dict],
-    health_profile=None,
+    profile_snapshot=None,
     fixed_protocol_id: str | None = None,
 ) -> ResolvedIntakePlan:
     text = _conversation_text(messages)
     protocol = _protocol_by_id(fixed_protocol_id) if fixed_protocol_id else _match_protocol(text)
-    overlays = _match_overlays(text, health_profile)    # 叠加规则：老人/小孩/孕妇/...
+    overlays = _match_overlays(text, profile_snapshot)    # 叠加规则：老人/小孩/孕妇/...
 
     required_fields = _unique(
         protocol.required_fields,
@@ -477,23 +477,23 @@ def _protocol_by_id(protocol_id: str | None) -> IntakeProtocol:
     return next(p for p in PROTOCOLS if p.id == "generic_opqrst")
 
 
-def _match_overlays(text: str, health_profile=None) -> tuple[IntakeOverlay, ...]:
+def _match_overlays(text: str, profile_snapshot=None) -> tuple[IntakeOverlay, ...]:
     matched: list[IntakeOverlay] = []
     for overlay in OVERLAYS:
         if any(kw in text for kw in overlay.keywords):
             matched.append(overlay)
 
-    age = getattr(health_profile, "age", None)
+    age = getattr(profile_snapshot, "age", None)
     if age is not None and age < 14:
         _append_overlay(matched, "pediatric")
     if age is not None and age >= 65:
         _append_overlay(matched, "elderly")
 
-    conditions = " ".join(getattr(health_profile, "chronic_conditions", []) or [])
-    meds = " ".join(getattr(health_profile, "current_medications", []) or [])
-    allergies = " ".join(getattr(health_profile, "allergies", []) or [])
-    pregnancy_weeks = getattr(health_profile, "pregnancy_weeks", None)
-    is_pregnant = bool(getattr(health_profile, "is_pregnant", False))
+    conditions = " ".join(getattr(profile_snapshot, "chronic_conditions", []) or [])
+    meds = " ".join(getattr(profile_snapshot, "current_medications", []) or [])
+    allergies = " ".join(getattr(profile_snapshot, "allergies", []) or [])
+    pregnancy_weeks = getattr(profile_snapshot, "pregnancy_weeks", None)
+    is_pregnant = bool(getattr(profile_snapshot, "is_pregnant", False))
     profile_text = f"{conditions} {meds} {allergies}"
     if (
         is_pregnant

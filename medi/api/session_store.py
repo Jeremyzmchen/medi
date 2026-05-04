@@ -16,6 +16,15 @@ import uuid
 from dataclasses import dataclass, field
 
 from medi.core.context import UnifiedContext, ModelConfig
+from medi.core.encounter import (
+    EncounterIntent,
+    EncounterState,
+    EncounterStatus,
+    create_encounter,
+    mark_active,
+    mark_completed,
+    mark_waiting,
+)
 from medi.core.observability import ObservabilityStore
 from medi.core.stream_bus import AsyncStreamBus
 from medi.agents.triage.runner import TriageGraphRunner
@@ -23,7 +32,8 @@ from medi.agents.triage.department_router import DepartmentRouter
 from medi.agents.orchestrator import OrchestratorAgent
 from medi.agents.medication.agent import MedicationAgent
 from medi.agents.health_report.agent import HealthReportAgent
-from medi.memory.health_profile import HealthProfile, load_profile
+from medi.memory.health_profile import load_profile
+from medi.memory.profile_snapshot import build_profile_snapshot
 
 
 @dataclass
@@ -35,6 +45,7 @@ class Session:
     medication_agent: MedicationAgent               # 医药咨询agent
     health_report_agent: HealthReportAgent          # 健康报告解读agent
     obs: ObservabilityStore                         # 观测集
+    encounters: dict[str, EncounterState] = field(default_factory=dict)
 
 
 # 全局 session 字典：session_id → Session
@@ -57,6 +68,7 @@ async def get_or_create_session(session_id: str | None, user_id: str) -> Session
     # 新 session
     new_id = session_id or str(uuid.uuid4())[:8]
     profile = await load_profile(user_id)
+    profile_snapshot = build_profile_snapshot(profile)
 
     obs = ObservabilityStore()
     ctx = UnifiedContext(
@@ -64,7 +76,7 @@ async def get_or_create_session(session_id: str | None, user_id: str) -> Session
         session_id=new_id,
         model_config=ModelConfig(),
         enabled_tools={"search_symptom_kb", "evaluate_urgency", "get_department_info"},
-        health_profile=profile,
+        profile_snapshot=profile_snapshot,
         observability=obs,
     )
 
@@ -104,3 +116,49 @@ def rebind_bus(session: Session, bus: AsyncStreamBus) -> None:
     session.health_report_agent._diet_agent._bus = bus
     session.health_report_agent._schedule_agent._bus = bus
     session.ctx.observability = session.obs  # obs 跨轮复用
+
+
+def active_encounter(session: Session) -> EncounterState | None:
+    encounter_id = session.ctx.active_encounter_id
+    if not encounter_id:
+        return None
+    return session.encounters.get(encounter_id)
+
+
+def ensure_active_encounter(
+    session: Session,
+    intent: EncounterIntent,
+    *,
+    force_new: bool = False,
+) -> EncounterState:
+    current = active_encounter(session)
+    reusable_statuses = {EncounterStatus.ACTIVE, EncounterStatus.WAITING}
+    if (
+        not force_new
+        and current is not None
+        and current.intent == intent
+        and current.status in reusable_statuses
+    ):
+        return mark_active(current)
+
+    encounter = create_encounter(
+        session_id=session.session_id,
+        user_id=session.ctx.user_id,
+        intent=intent,
+        profile_snapshot=session.ctx.profile_snapshot,
+    )
+    session.encounters[encounter.encounter_id] = encounter
+    session.ctx.active_encounter_id = encounter.encounter_id
+    return encounter
+
+
+def mark_active_encounter_waiting(session: Session) -> None:
+    encounter = active_encounter(session)
+    if encounter is not None:
+        mark_waiting(encounter)
+
+
+def mark_active_encounter_completed(session: Session) -> None:
+    encounter = active_encounter(session)
+    if encounter is not None:
+        mark_completed(encounter)

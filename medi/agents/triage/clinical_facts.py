@@ -1,10 +1,10 @@
-"""
-预问诊事实存储。
+﻿"""
+ClinicalFacts — 本次 Encounter 的临床事实源。
 
-这一层把“护士已经知道什么”从 LLM prompt 中拿出来：
+这一层把“本次医疗事件中已经确认/否认/未知的事实”从 LLM prompt 中拿出来：
   1. LLM 只负责从对话中抽取事实
-  2. FactStore 合并已知/否认/未知信息
-  3. IntakeReviewNode 基于 FactStore 决定下一问
+  2. ClinicalFactStore 合并已知/否认/未知信息
+  3. 上层节点基于 ClinicalFactStore 投影病历、计算任务进度、决定下一问
 
 这样可以避免重复问已知信息，也避免把问诊流程写成大量主诉枚举。
 """
@@ -14,12 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from medi.agents.triage.graph.state import (
-    CollectionStatus,
-    GeneralCondition,
-    OPQRSTStatus,
-    SymptomData,
-)
 from medi.agents.triage.intake_protocols import ResolvedIntakePlan
 
 
@@ -73,7 +67,7 @@ class ClinicalFact:
         }
 
 
-class FactStore:
+class ClinicalFactStore:
     def __init__(self, facts: Iterable[ClinicalFact] | None = None) -> None:
         self._facts: dict[str, ClinicalFact] = {}
         for fact in facts or ():
@@ -81,7 +75,7 @@ class FactStore:
             # merge规则为：为空的clinical字段就补充信息，置信度更高的就替换，否则不动
 
     @classmethod
-    def from_state(cls, raw_facts: list[dict] | None) -> "FactStore":
+    def from_state(cls, raw_facts: list[dict] | None) -> "ClinicalFactStore":
         facts = []
         for item in raw_facts or []:
             fact = ClinicalFact.from_dict(item)
@@ -138,43 +132,6 @@ class FactStore:
             value = fact.value if fact.value is not None else fact.status
             lines.append(f"- {label}: {value}（{fact.status}；证据：{fact.evidence or '无'}）")
         return "\n".join(lines)
-
-    def to_symptom_data(self, raw_descriptions: list[str]) -> SymptomData:
-        gc = self._build_general_condition()
-        return SymptomData(
-            raw_descriptions=raw_descriptions,
-            onset=self.value("hpi.onset"),
-            exposure_event=self.value("hpi.exposure_event"),
-            exposure_symptoms=self.value("hpi.exposure_symptoms"),
-            provocation=self.value("hpi.aggravating_alleviating"),
-            quality=self.value("hpi.character"),
-            region=self.value("hpi.location"),
-            severity=self.value("hpi.severity"),
-            max_temperature=self.value("specific.max_temperature"),
-            frequency=self.value("specific.frequency"),
-            time_pattern=self.value("hpi.timing"),
-            radiation=self.value("hpi.radiation"),
-            accompanying=_split_list(
-                self.value("hpi.associated_symptoms")
-                or self.value("specific.associated_fever_symptoms")
-            ),
-            relevant_history=self.value("hpi.relevant_history"),
-            medications=_split_list(self.value("safety.current_medications")),
-            allergies=_split_list(self.value("safety.allergies")),
-            general_condition=gc if any(v is not None for v in gc.values()) else None,
-        )
-
-    def _build_general_condition(self) -> GeneralCondition:
-        """从 gc.* 槽位构建一般情况结构。"""
-        return GeneralCondition(
-            mental_status=self.value("gc.mental_status"),
-            sleep=self.value("gc.sleep"),
-            appetite=self.value("gc.appetite"),
-            bowel=self.value("gc.bowel"),
-            urination=self.value("gc.urination"),
-            weight_change=self.value("gc.weight_change"),
-        )
-
 
 BASE_SLOT_SPECS: dict[str, SlotSpec] = {
     "hpi.chief_complaint": SlotSpec("hpi.chief_complaint", "主诉", "您今天主要是哪里不舒服，能描述一下吗？", 10),
@@ -247,48 +204,6 @@ def required_slots_for_plan(plan: ResolvedIntakePlan) -> list[str]:
     return _unique(slots)
 
 
-def collection_status_from_facts(
-    store: FactStore,
-    plan: ResolvedIntakePlan,
-    complete: bool,
-    reason: str,
-) -> CollectionStatus:
-    opqrst = OPQRSTStatus(
-        onset=_slot_status(store, "hpi.onset"),
-        provocation=_slot_status(store, "hpi.aggravating_alleviating"),
-        quality=_slot_status(store, "hpi.character"),
-        location=_slot_status(store, "hpi.location"),
-        severity=_slot_status(store, "hpi.severity"),
-        time_pattern=_slot_status(store, "hpi.timing"),
-        radiation=_slot_status(store, "hpi.radiation"),
-    )
-
-    meds = _slot_status(store, "safety.current_medications")
-    allergies = _slot_status(store, "safety.allergies")
-    if meds == "complete" and allergies == "complete":
-        med_allergy_status = "complete"
-    elif meds != "missing" or allergies != "missing":
-        med_allergy_status = "partial"
-    else:
-        med_allergy_status = "missing"
-
-    pattern = {
-        key: _slot_status(store, f"specific.{key}")
-        for key, _ in plan.pattern_required
-    }
-
-    return CollectionStatus(
-        chief_complaint=_slot_status(store, "hpi.chief_complaint"),
-        opqrst=opqrst,
-        associated_symptoms=_slot_status(store, "hpi.associated_symptoms"),
-        relevant_history=_slot_status(store, "hpi.relevant_history"),
-        medications_allergies=med_allergy_status,
-        pattern_specific=pattern,
-        can_conclude=complete,
-        reason=reason,
-    )
-
-
 def extraction_slot_prompt(plan: ResolvedIntakePlan) -> str:
     lines = []
     all_slots = _unique(list(BASE_SLOT_SPECS), required_slots_for_plan(plan))
@@ -349,30 +264,6 @@ def slot_label(slot: str, plan: ResolvedIntakePlan | None = None) -> str:
         key = slot.removeprefix("specific.")
         return dict(plan.pattern_required).get(key, key)
     return slot
-
-
-def _slot_status(store: FactStore, slot: str) -> str:
-    fact = store.get(slot)
-    if fact is None:
-        return "missing"
-    if fact.status in ANSWERED_STATUSES:
-        return "complete"
-    if fact.status == "partial":
-        return "partial"
-    return "missing"
-
-
-def _split_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    separators = [",", "，", "、", ";", "；"]
-    items = [value]
-    for sep in separators:
-        next_items = []
-        for item in items:
-            next_items.extend(item.split(sep))
-        items = next_items
-    return [item.strip() for item in items if item.strip() and item.strip() not in {"无", "没有"}]
 
 
 def _clean_value(value) -> str | None:
