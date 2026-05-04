@@ -1,15 +1,15 @@
-"""
+﻿"""
 Subtask completion scoring for task-driven pre-consultation orchestration.
 
-Monitor evaluates each subtask against the evolving structured medical record.
+Monitor evaluates each subtask against the evolving PreconsultationRecord.
 Each score combines two dimensions in a lightweight deterministic form:
 whether the required clinical content exists, and whether the stored value is
-usable as medical evidence.
+usable as pre-consultation evidence.
 """
 
 from __future__ import annotations
 
-from medi.agents.triage.intake_facts import ANSWERED_STATUSES
+from medi.agents.triage.clinical_facts import ANSWERED_STATUSES
 from medi.agents.triage.task_definitions import (
     TASK_COMPLETION_THRESHOLD,
     TASK_SPECS,
@@ -20,9 +20,9 @@ from medi.agents.triage.task_definitions import (
 
 def evaluate_task_progress(
     *,
-    medical_record: dict | None,
+    preconsultation_record: dict | None,
 ) -> tuple[dict[str, dict], list[str]]:
-    record = medical_record or {}
+    record = preconsultation_record or {}
     progress = {
         spec.id: _evaluate_task(spec, record)
         for spec in TASK_SPECS
@@ -37,12 +37,12 @@ def evaluate_task_progress(
 
 def _evaluate_task(
     spec: PreconsultationTaskSpec,
-    medical_record: dict,
+    preconsultation_record: dict,
 ) -> dict:
     completed = [
         requirement.id
         for requirement in spec.requirements
-        if _requirement_completed(requirement, medical_record)
+        if _requirement_completed(requirement, preconsultation_record)
     ]
     total = len(spec.requirements)
     score = len(completed) / total if total else 1.0
@@ -64,7 +64,7 @@ def _evaluate_task(
         "completed_requirements": completed,
         "missing_requirements": missing,
         "requirement_details": [
-            _requirement_detail(requirement, medical_record)
+            _requirement_detail(requirement, preconsultation_record)
             for requirement in spec.requirements
         ],
         "reason": _reason(status, missing),
@@ -73,9 +73,9 @@ def _evaluate_task(
 
 def _requirement_completed(
     requirement: TaskRequirement,
-    medical_record: dict,
+    preconsultation_record: dict,
 ) -> bool:
-    values = [_record_value(path, medical_record) for path in requirement.record_paths]
+    values = [_record_value(path, preconsultation_record) for path in requirement.record_paths]
     completed = [_record_value_is_completed(value) for value in values]
     if requirement.completion_mode == "all":
         return all(completed) if completed else False
@@ -84,11 +84,11 @@ def _requirement_completed(
 
 def _requirement_detail(
     requirement: TaskRequirement,
-    medical_record: dict,
+    preconsultation_record: dict,
 ) -> dict:
     completed_paths = [
         path for path in requirement.record_paths
-        if _record_value_is_completed(_record_value(path, medical_record))
+        if _record_value_is_completed(_record_value(path, preconsultation_record))
     ]
     return {
         "id": requirement.id,
@@ -99,8 +99,8 @@ def _requirement_detail(
     }
 
 
-def _record_value(path: str, medical_record: dict):
-    current = medical_record
+def _record_value(path: str, preconsultation_record: dict):
+    current = preconsultation_record
     for part in path.split("."):
         if not isinstance(current, dict):
             return None

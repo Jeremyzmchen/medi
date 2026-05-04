@@ -3,7 +3,7 @@ UnifiedContext — 贯穿所有模块的共享上下文
 
 模块：
     - dialogue_state    全局状态机控制对话流程
-    - health_profile    硬约束
+    - profile_snapshot  本次会话的只读健康档案快照
     - enabled_tools     工具注册表
     - model_config      模型配置
     - observability     观测数据
@@ -23,7 +23,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from medi.memory.health_profile import HealthProfile
+    from medi.memory.profile_snapshot import ProfileSnapshot
     from medi.core.providers import LLMProvider
     from medi.core.observability import ObservabilityStore
 
@@ -61,7 +61,7 @@ class UnifiedContext:
 
     模块：
     - dialogue_state    全局状态机控制对话流程
-    - health_profile    硬约束
+    - profile_snapshot  本次会话的只读健康档案快照
     - enabled_tools     工具注册表
     - model_config      模型配置
     - observability     观测数据
@@ -70,12 +70,13 @@ class UnifiedContext:
     """
     user_id: str
     session_id: str
+    active_encounter_id: str | None = None
 
     # 对话状态机（Medi 特有）
     dialogue_state: DialogueState = DialogueState.INIT
 
-    # 用户健康档案（Medi 特有，硬约束）
-    health_profile: HealthProfile | None = None
+    # 本次会话开始时截取的只读健康档案快照
+    profile_snapshot: ProfileSnapshot | None = None
 
     # 模型配置
     model_config: ModelConfig = field(default_factory=ModelConfig)
@@ -113,22 +114,22 @@ class UnifiedContext:
 
     def build_constraint_prompt(self) -> str:
         """
-        将健康档案转为硬约束 prompt 片段，注入 system prompt。
+        将本次会话的健康档案快照转为硬约束 prompt 片段，注入 system prompt。
         """
-        if self.health_profile is None:
+        profile = self.profile_snapshot
+        if profile is None:
             return ""
 
-        p = self.health_profile
         # sys-prompt header
         lines = ["[用户健康约束 - 必须严格遵守，不得忽略]"]
 
-        if p.allergies:
-            lines.append(f"- 过敏史：{', '.join(p.allergies)}（涉及药物建议时必须过滤）")
-        if p.chronic_conditions:
-            lines.append(f"- 慢性病：{', '.join(p.chronic_conditions)}（影响科室优先级判断）")
-        if p.current_medications:
-            lines.append(f"- 当前用药：{', '.join(p.current_medications)}（避免药物冲突建议）")
-        if p.age:
-            lines.append(f"- 年龄：{p.age}岁，性别：{p.gender or '未知'}")
+        if profile.allergies:
+            lines.append(f"- 过敏史：{', '.join(profile.allergies)}（涉及药物建议时必须过滤）")
+        if profile.chronic_conditions:
+            lines.append(f"- 慢性病：{', '.join(profile.chronic_conditions)}（影响科室优先级判断）")
+        if profile.current_medications:
+            lines.append(f"- 当前用药：{', '.join(profile.current_medications)}（避免药物冲突建议）")
+        if profile.age:
+            lines.append(f"- 年龄：{profile.age}岁，性别：{profile.gender or '未知'}")
 
         return "\n".join(lines)

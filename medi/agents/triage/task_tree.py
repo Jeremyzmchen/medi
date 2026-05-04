@@ -1,10 +1,10 @@
-"""
+﻿"""
 Hierarchical pre-consultation task tree.
 
 This module lifts the flat intake slots into pre-consultation task groups:
 T1 triage, T2 HPI collection, T3 past/safety history, and T4 chief
 complaint generation. It is intentionally derived from the existing
-FactStore and ResolvedIntakePlan so the current intake flow can adopt the
+ClinicalFactStore and ResolvedIntakePlan so the current intake flow can adopt the
 tree without rewriting fact extraction or protocol matching.
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from medi.agents.triage.intake_facts import FactStore, slot_label
+from medi.agents.triage.clinical_facts import ClinicalFactStore, slot_label
 from medi.agents.triage.intake_protocols import ResolvedIntakePlan
 
 
@@ -94,7 +94,7 @@ HPI_PATTERN_KEYS = {
 
 
 def build_intake_task_tree(
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
     *,
     relaxed_low_value: bool = False,
@@ -293,7 +293,7 @@ def _task_specs_for_plan(
 
 
 def _task_node_from_spec(
-    store: FactStore,
+    store: ClinicalFactStore,
     plan: ResolvedIntakePlan,
     spec: TaskSpec,
     clinical_missing: set[str],

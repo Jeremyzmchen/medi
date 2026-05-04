@@ -1,4 +1,4 @@
-"""
+﻿"""
 Medi CLI 入口
 
 用法：
@@ -23,6 +23,15 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from medi.core.context import UnifiedContext, ModelConfig
+from medi.core.encounter import (
+    EncounterIntent,
+    EncounterState,
+    EncounterStatus,
+    create_encounter,
+    mark_active,
+    mark_completed,
+    mark_waiting,
+)
 from medi.core.stream_bus import AsyncStreamBus, EventType
 from medi.core.observability import ObservabilityStore, query_recent_sessions, query_session_detail
 from medi.agents.triage.runner import TriageGraphRunner
@@ -31,6 +40,7 @@ from medi.agents.orchestrator import OrchestratorAgent, Intent
 from medi.agents.medication.agent import MedicationAgent
 from medi.agents.health_report.agent import HealthReportAgent
 from medi.memory.health_profile import HealthProfile, load_profile, save_profile
+from medi.memory.profile_snapshot import build_profile_snapshot
 from medi.memory.episodic import EpisodicMemory
 
 app = typer.Typer(name="medi", help="Medi 智能健康 Agent", invoke_without_command=True)
@@ -115,6 +125,7 @@ async def _chat_loop(user_id: str) -> None:
         profile = await _collect_profile(user_id)
     elif profile.is_complete():
         console.print(f"\n[dim]已加载健康档案：{profile.gender}，{profile.age}岁[/dim]")
+    profile_snapshot = build_profile_snapshot(profile)
 
     # 初始化可观测集
     obs = ObservabilityStore()
@@ -125,7 +136,7 @@ async def _chat_loop(user_id: str) -> None:
         model_config=ModelConfig(),
         # ToolRuntime 校验工具可用
         enabled_tools={"search_symptom_kb", "evaluate_urgency", "get_department_info"},
-        health_profile=profile,
+        profile_snapshot=profile_snapshot,
         observability=obs,
     )
     # 注册门诊路由agent(rag查找诊室标签)
@@ -144,6 +155,47 @@ async def _chat_loop(user_id: str) -> None:
     medication_agent = MedicationAgent(ctx=ctx, bus=bus)
     # 注册健康报告解读agent
     health_report_agent = HealthReportAgent(ctx=ctx, bus=bus)
+    encounters: dict[str, EncounterState] = {}
+
+    def ensure_encounter(intent: EncounterIntent, *, force_new: bool = False) -> None:
+        current = encounters.get(ctx.active_encounter_id or "")
+        if (
+            not force_new
+            and current is not None
+            and current.intent == intent
+            and current.status in {EncounterStatus.ACTIVE, EncounterStatus.WAITING}
+        ):
+            mark_active(current)
+            return
+
+        encounter = create_encounter(
+            session_id=session_id,
+            user_id=user_id,
+            intent=intent,
+            profile_snapshot=ctx.profile_snapshot,
+        )
+        encounters[encounter.encounter_id] = encounter
+        ctx.active_encounter_id = encounter.encounter_id
+
+    def mark_current_waiting() -> None:
+        encounter = encounters.get(ctx.active_encounter_id or "")
+        if encounter is not None:
+            mark_waiting(encounter)
+
+    def mark_current_completed() -> None:
+        encounter = encounters.get(ctx.active_encounter_id or "")
+        if encounter is not None:
+            mark_completed(encounter)
+
+    def ensure_encounter_for_intent(intent: Intent) -> None:
+        if intent == Intent.NEW_SYMPTOM:
+            ensure_encounter(EncounterIntent.TRIAGE, force_new=True)
+        elif intent == Intent.SYMPTOM:
+            ensure_encounter(EncounterIntent.TRIAGE)
+        elif intent == Intent.MEDICATION:
+            ensure_encounter(EncounterIntent.MEDICATION)
+        elif intent == Intent.HEALTH_REPORT:
+            ensure_encounter(EncounterIntent.HEALTH_REPORT)
 
     console.print(f"\n[bold green]Medi 分诊助手[/bold green] (会话 {session_id})")
     console.print("请描述您的问题或症状，输入 [bold]quit[/bold] 退出")
@@ -179,21 +231,20 @@ async def _chat_loop(user_id: str) -> None:
             async for event in bus.stream():
                 # 1.智能体追问
                 if event.type == EventType.FOLLOW_UP:
+                    mark_current_waiting()
                     console.print(f"\n[cyan]Medi:[/cyan] {event.data['question']}")
                 # 2. 分诊结束，智能体输出报告
                 elif event.type == EventType.RESULT:
-                    patient_out = event.data.get("patient_output")
-                    doctor_hpi = event.data.get("doctor_hpi")
+                    mark_current_completed()
+                    triage_output = event.data.get("triage_output") or {}
+                    patient_out = triage_output.get("patient")
+                    doctor_report = triage_output.get("doctor_report")
 
                     if patient_out:
                         # ── 患者端：科室推荐 + 紧急程度 + 建议 ──
                         console.print("\n[bold cyan]── 分诊结果 ──[/bold cyan]")
                         primary = patient_out.get("primary_department")
                         alternatives = patient_out.get("alternative_departments") or []
-                        if primary is None and patient_out.get("recommended_departments"):
-                            legacy_depts = patient_out.get("recommended_departments") or []
-                            primary = legacy_depts[0] if legacy_depts else None
-                            alternatives = legacy_depts[1:]
                         if primary:
                             conf = int(primary.get("confidence", 0) * 100)
                             console.print(f"[bold]首选科室：[/bold]{primary['department']}（{conf}%）— {primary.get('reason','')}")
@@ -214,43 +265,43 @@ async def _chat_loop(user_id: str) -> None:
                         console.print("\n[cyan]Medi:[/cyan]")
                         console.print(Markdown(event.data["content"]))
 
-                    if doctor_hpi:
-                        # ── 医生端：HPI 预诊报告 ──
-                        console.print("\n[bold magenta]── 医生预诊报告（HPI）──[/bold magenta]")
+                    if doctor_report:
+                        # ── 医生端：预诊报告 ──
+                        console.print("\n[bold magenta]── 医生预诊报告 ──[/bold magenta]")
                         patient_meta = []
-                        if doctor_hpi.get("user_id"):
-                            patient_meta.append(f"用户ID：{doctor_hpi['user_id']}")
-                        if doctor_hpi.get("gender"):
-                            patient_meta.append(f"性别：{doctor_hpi['gender']}")
-                        if doctor_hpi.get("age") is not None:
-                            patient_meta.append(f"年龄：{doctor_hpi['age']}岁")
-                        if doctor_hpi.get("consultation_time"):
-                            patient_meta.append(f"咨询时间：{doctor_hpi['consultation_time']}")
+                        if doctor_report.get("user_id"):
+                            patient_meta.append(f"用户ID：{doctor_report['user_id']}")
+                        if doctor_report.get("gender"):
+                            patient_meta.append(f"性别：{doctor_report['gender']}")
+                        if doctor_report.get("age") is not None:
+                            patient_meta.append(f"年龄：{doctor_report['age']}岁")
+                        if doctor_report.get("consultation_time"):
+                            patient_meta.append(f"咨询时间：{doctor_report['consultation_time']}")
                         if patient_meta:
                             console.print("[bold]患者信息：[/bold]" + "  ".join(patient_meta))
-                        console.print(f"[bold]主诉：[/bold]{doctor_hpi.get('chief_complaint','')}")
-                        console.print(f"[bold]HPI 叙述：[/bold]{doctor_hpi.get('hpi_narrative','')}")
-                        _hpi_row("发作时间", doctor_hpi.get("onset"))
-                        _hpi_row("部位", doctor_hpi.get("location"))
-                        _hpi_row("持续时间", doctor_hpi.get("duration"))
-                        _hpi_row("性质", doctor_hpi.get("character"))
-                        _hpi_row("加重/缓解", doctor_hpi.get("alleviating_aggravating_factors"))
-                        _hpi_row("放射痛", doctor_hpi.get("radiation"))
-                        _hpi_row("时间特征", doctor_hpi.get("timing"))
-                        severity_score = doctor_hpi.get("severity_score")
+                        console.print(f"[bold]主诉：[/bold]{doctor_report.get('chief_complaint','')}")
+                        console.print(f"[bold]HPI 叙述：[/bold]{doctor_report.get('hpi_narrative','')}")
+                        _hpi_row("发作时间", doctor_report.get("onset"))
+                        _hpi_row("部位", doctor_report.get("location"))
+                        _hpi_row("持续时间", doctor_report.get("duration"))
+                        _hpi_row("性质", doctor_report.get("character"))
+                        _hpi_row("加重/缓解", doctor_report.get("alleviating_aggravating_factors"))
+                        _hpi_row("放射痛", doctor_report.get("radiation"))
+                        _hpi_row("时间特征", doctor_report.get("timing"))
+                        severity_score = doctor_report.get("severity_score")
                         severity_label = _hpi_severity_label(severity_score)
                         if severity_label == "最高体温" and severity_score:
                             severity_score = str(severity_score).replace("最高体温", "").strip("：: ")
                         _hpi_row(severity_label, severity_score)
-                        assoc = doctor_hpi.get("associated_symptoms") or []
+                        assoc = doctor_report.get("associated_symptoms") or []
                         if assoc:
                             console.print(f"[bold]伴随症状：[/bold]{', '.join(assoc)}")
-                        neg = doctor_hpi.get("pertinent_negatives") or []
+                        neg = doctor_report.get("pertinent_negatives") or []
                         if neg:
                             console.print(f"[bold]相关阴性：[/bold]{', '.join(neg)}")
-                        _hpi_row("检查/诊断经过", doctor_hpi.get("diagnostic_history"))
-                        _hpi_row("治疗经过", doctor_hpi.get("therapeutic_history"))
-                        _hpi_dict_row("一般情况", doctor_hpi.get("general_condition"), {
+                        _hpi_row("检查/诊断经过", doctor_report.get("diagnostic_history"))
+                        _hpi_row("治疗经过", doctor_report.get("therapeutic_history"))
+                        _hpi_dict_row("一般情况", doctor_report.get("general_condition"), {
                             "mental_status": "精神/意识",
                             "sleep": "睡眠",
                             "appetite": "食欲",
@@ -258,7 +309,7 @@ async def _chat_loop(user_id: str) -> None:
                             "urination": "小便",
                             "weight_change": "体重",
                         })
-                        _hpi_dict_row("既往史", doctor_hpi.get("past_history"), {
+                        _hpi_dict_row("既往史", doctor_report.get("past_history"), {
                             "disease_history": "疾病史",
                             "immunization_history": "接种史",
                             "surgical_history": "手术史",
@@ -267,29 +318,30 @@ async def _chat_loop(user_id: str) -> None:
                             "allergy_history": "过敏史",
                             "current_medications": "长期/当前用药",
                         })
-                        meds = doctor_hpi.get("current_medications") or []
-                        allerg = doctor_hpi.get("allergies") or []
+                        meds = doctor_report.get("current_medications") or []
+                        allerg = doctor_report.get("allergies") or []
                         console.print(f"[bold]用药：[/bold]{', '.join(meds) if meds else '无'}  [bold]过敏：[/bold]{', '.join(allerg) if allerg else '无'}")
-                        _hpi_dict_row("分诊摘要", doctor_hpi.get("triage_summary"), {
+                        _hpi_dict_row("分诊摘要", doctor_report.get("triage_summary"), {
                             "protocol_label": "主题",
                             "primary_department": "首选",
                             "secondary_department": "备选",
                             "reason": "依据",
                         })
-                        diffs = doctor_hpi.get("differential_diagnoses") or []
+                        diffs = doctor_report.get("differential_diagnoses") or []
                         if diffs:
                             console.print("[bold]鉴别诊断：[/bold]")
                             for d in diffs:
                                 console.print(f"  • [{d.get('likelihood','')}] {d.get('condition','')} — {d.get('reasoning','')}")
-                        workup = doctor_hpi.get("recommended_workup") or []
+                        workup = doctor_report.get("recommended_workup") or []
                         if workup:
                             console.print(f"[bold]建议检查：[/bold]{', '.join(workup)}")
-                        coverage = doctor_hpi.get("record_coverage") or {}
+                        coverage = doctor_report.get("record_coverage") or {}
                         missing = coverage.get("missing_or_unknown") or []
                         if missing:
                             console.print(f"[bold]仍未采集：[/bold]{', '.join(missing)}")
                 # 红旗预警报告
                 elif event.type == EventType.ESCALATION:
+                    mark_current_completed()
                     console.print(f"\n[bold red]警告:[/bold red] {event.data['reason']}")
 
         async def produce() -> None:
@@ -301,6 +353,7 @@ async def _chat_loop(user_id: str) -> None:
             """
             symptom_summary = triage_agent.symptom_summary()
             intent = await orchestrator.classify_intent(user_input, symptom_summary)
+            ensure_encounter_for_intent(intent)
 
             if intent == Intent.OUT_OF_SCOPE:
                 await orchestrator.handle_out_of_scope()
@@ -468,3 +521,4 @@ def serve(
 
 if __name__ == "__main__":
     app()
+

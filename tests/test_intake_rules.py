@@ -1,4 +1,4 @@
-from medi.agents.triage.intake_facts import FactStore, collection_status_from_facts
+from medi.agents.triage.clinical_facts import ClinicalFactStore
 from medi.agents.triage.intake_protocols import resolve_intake_plan
 from medi.agents.triage.intake_rules import extract_deterministic_facts
 from medi.agents.triage.graph.nodes.intake_prompter_node import _fallback_question
@@ -24,7 +24,7 @@ def test_deterministic_rules_extract_ibuprofen_as_current_medication() -> None:
 def test_ibuprofen_in_first_turn_prevents_reasking_current_medication() -> None:
     messages = _messages("我从昨晚开始发烧，最高39度，吃了布洛芬退了一点")
     plan = resolve_intake_plan(messages)
-    store = FactStore()
+    store = ClinicalFactStore()
     store.merge_items([
         {"slot": "hpi.chief_complaint", "status": "present", "value": "发烧"},
         {"slot": "hpi.onset", "status": "present", "value": "昨晚"},
@@ -35,10 +35,10 @@ def test_ibuprofen_in_first_turn_prevents_reasking_current_medication() -> None:
         *extract_deterministic_facts(messages, protocol_id=plan.protocol_id),
     ], source_turn=1)
 
-    status = collection_status_from_facts(store, plan, complete=False, reason="")
     question = _fallback_question("safety.allergies", plan, store)
 
-    assert status["medications_allergies"] == "partial"
+    assert store.is_answered("safety.current_medications") is True
+    assert store.is_answered("safety.allergies") is False
     assert "过敏" in question
     assert "平时在用什么药" not in question
 

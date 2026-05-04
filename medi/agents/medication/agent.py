@@ -6,7 +6,7 @@ MedicationAgent — 用药咨询 Agent
   2. 副作用咨询 — 吃了 XX 有什么副作用
   3. 药物冲突   — XX 和 YY 能一起吃吗
 
-当前实现：GPT-4o 直接回答，注入 HealthProfile 硬约束。
+当前实现：GPT-4o 直接回答，注入 ProfileSnapshot 硬约束。
 免责：回答仅供参考，以药品说明书或医生/药师建议为准。
 
 后续扩展（未实现）：

@@ -39,7 +39,7 @@ def build_triage_graph(
     router: DepartmentRouter,
     smart_chain: list,
     fast_chain: list,
-    health_profile,
+    profile_snapshot,
     constraint_prompt: str,
     history_prompt: str,
     episodic: EpisodicMemory,
@@ -52,27 +52,27 @@ def build_triage_graph(
         intake_node,
         bus=bus,
         fast_chain=fast_chain,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
         obs=obs,
     )
 
     bound_intake_monitor = functools.partial(
         intake_monitor_node,
         bus=bus,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
     )
 
     bound_intake_controller = functools.partial(
         intake_controller_node,
         bus=bus,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
     )
 
     bound_intake_prompter = functools.partial(
         intake_prompter_node,
         bus=bus,
         fast_chain=fast_chain,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
         obs=obs,
     )
 
@@ -87,7 +87,7 @@ def build_triage_graph(
         router=router,
         smart_chain=smart_chain,
         fast_chain=fast_chain,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
         constraint_prompt=constraint_prompt,
         session_id=session_id,
         obs=obs,
@@ -99,7 +99,7 @@ def build_triage_graph(
         smart_chain=smart_chain,
         constraint_prompt=constraint_prompt,
         history_prompt=history_prompt,
-        health_profile=health_profile,
+        profile_snapshot=profile_snapshot,
         episodic=episodic,
         session_id=session_id,
         obs=obs,
@@ -152,14 +152,16 @@ def build_triage_graph(
 
 
 def _route_from_controller(state: TriageGraphState) -> str:
-    if state.get("intake_complete"):
+    control = state.get("workflow_control") or {}
+    if control.get("intake_complete"):
         return "clinical"
     return "prompter"
 
 
 def _route_from_clinical(state: TriageGraphState) -> str:
-    next_node = state.get("next_node", "output")
-    iteration = state.get("graph_iteration", 1)
+    control = state.get("workflow_control") or {}
+    next_node = control.get("next_node", "output")
+    iteration = control.get("graph_iteration", 1)
     # 最多再回去问一次
     if next_node == "intake" and iteration < 2:
         return "intake"
