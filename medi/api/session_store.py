@@ -22,9 +22,11 @@ from medi.core.encounter import (
     EncounterStatus,
     create_encounter,
     mark_active,
+    mark_cancelled,
     mark_completed,
     mark_waiting,
 )
+from medi.core.langgraph_checkpoint import checkpoint_provider
 from medi.core.observability import ObservabilityStore
 from medi.core.stream_bus import AsyncStreamBus
 from medi.agents.triage.runner import TriageGraphRunner
@@ -88,6 +90,7 @@ async def get_or_create_session(session_id: str | None, user_id: str) -> Session
         ctx=ctx,
         bus=bus,
         router=_router,
+        checkpointer=checkpoint_provider.get(),
     )
     medication_agent = MedicationAgent(ctx=ctx, bus=bus)
     health_report_agent = HealthReportAgent(ctx=ctx, bus=bus)
@@ -162,3 +165,9 @@ def mark_active_encounter_completed(session: Session) -> None:
     encounter = active_encounter(session)
     if encounter is not None:
         mark_completed(encounter)
+
+
+def mark_active_encounter_cancelled(session: Session) -> None:
+    encounter = active_encounter(session)
+    if encounter is not None:
+        mark_cancelled(encounter)

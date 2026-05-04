@@ -22,11 +22,13 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from medi.agents.orchestrator import Intent
-from medi.api.schemas import ChatRequest, ChatResponse
+from medi.agents.triage.runner import GraphThreadStatus
+from medi.api.schemas import ChatRequest, ChatResponse, ResumeStateResponse, SessionActionResponse
 from medi.api.session_store import (
     Session,
     ensure_active_encounter,
     get_or_create_session,
+    mark_active_encounter_cancelled,
     mark_active_encounter_completed,
     mark_active_encounter_waiting,
     rebind_bus,
@@ -55,6 +57,38 @@ def _ensure_encounter_for_intent(session: Session, intent: Intent) -> None:
         ensure_active_encounter(session, EncounterIntent.MEDICATION)
     elif intent == Intent.HEALTH_REPORT:
         ensure_active_encounter(session, EncounterIntent.HEALTH_REPORT)
+
+
+async def _dispatch_message(session: Session, message: str) -> None:
+    ctx = session.ctx
+    agent = session.agent
+    orchestrator = session.orchestrator
+    medication_agent = session.medication_agent
+
+    thread_status = await agent.inspect_thread_state()
+    if thread_status in {GraphThreadStatus.INTERRUPTED, GraphThreadStatus.ACTIVE}:
+        ensure_active_encounter(session, EncounterIntent.TRIAGE)
+        await agent.handle(message)
+        return
+
+    symptom_summary = agent.symptom_summary()
+    intent = await orchestrator.classify_intent(message, symptom_summary)
+    _ensure_encounter_for_intent(session, intent)
+
+    if intent == Intent.OUT_OF_SCOPE:
+        await orchestrator.handle_out_of_scope()
+    elif intent == Intent.FOLLOWUP:
+        await orchestrator.handle_followup(message)
+    elif intent == Intent.NEW_SYMPTOM:
+        ctx.messages.clear()
+        await agent.reset_graph_state()
+        await agent.handle(message)
+    elif intent == Intent.MEDICATION:
+        await medication_agent.handle(message)
+    elif intent == Intent.HEALTH_REPORT:
+        await session.health_report_agent.handle(message)
+    else:
+        await agent.handle(message)
 
 
 async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple[str, list[dict]]:
@@ -103,30 +137,7 @@ async def _run_turn(session_id: str | None, user_id: str, message: str) -> tuple
                 ))
 
     async def produce() -> None:
-        ctx = session.ctx
-        agent = session.agent
-        orchestrator = session.orchestrator
-        medication_agent = session.medication_agent
-
-        symptom_summary = agent.symptom_summary()
-        intent = await orchestrator.classify_intent(message, symptom_summary)
-        _ensure_encounter_for_intent(session, intent)
-
-        if intent == Intent.OUT_OF_SCOPE:
-            await orchestrator.handle_out_of_scope()
-        elif intent == Intent.FOLLOWUP:
-            await orchestrator.handle_followup(message)
-        elif intent == Intent.NEW_SYMPTOM:
-            ctx.messages.clear()
-            agent.reset_graph_state()
-            await agent.handle(message)
-        elif intent == Intent.MEDICATION:
-            await medication_agent.handle(message)
-        elif intent == Intent.HEALTH_REPORT:
-            await session.health_report_agent.handle(message)
-        else:
-            await agent.handle(message)
-
+        await _dispatch_message(session, message)
         await bus.close()
 
     await asyncio.gather(consume(), produce())
@@ -156,6 +167,50 @@ async def chat(req: ChatRequest) -> list[ChatResponse]:
     return [ChatResponse(**e) for e in events]
 
 
+@router.get("/session/{session_id}/resume-state", response_model=ResumeStateResponse)
+async def resume_state(
+    session_id: str,
+    user_id: str = Query(default="guest"),
+) -> ResumeStateResponse:
+    session = await get_or_create_session(session_id, user_id)
+    context = await session.agent.resume_context()
+    return ResumeStateResponse(**context)
+
+
+@router.post("/session/{session_id}/restart", response_model=SessionActionResponse)
+async def restart_session(
+    session_id: str,
+    user_id: str = Query(default="guest"),
+) -> SessionActionResponse:
+    session = await get_or_create_session(session_id, user_id)
+    mark_active_encounter_cancelled(session)
+    session.ctx.messages.clear()
+    session.ctx.active_encounter_id = None
+    await session.agent.reset_graph_state()
+    return SessionActionResponse(
+        session_id=session.session_id,
+        status="restarted",
+        message="已重新开始本次分诊。",
+    )
+
+
+@router.post("/session/{session_id}/close", response_model=SessionActionResponse)
+async def close_session(
+    session_id: str,
+    user_id: str = Query(default="guest"),
+) -> SessionActionResponse:
+    session = await get_or_create_session(session_id, user_id)
+    mark_active_encounter_cancelled(session)
+    session.ctx.messages.clear()
+    session.ctx.active_encounter_id = None
+    await session.agent.reset_graph_state()
+    return SessionActionResponse(
+        session_id=session.session_id,
+        status="closed",
+        message="已结束本次分诊。",
+    )
+
+
 @router.get("/stream")
 async def chat_stream(
     message: str = Query(..., description="用户输入"),
@@ -179,30 +234,7 @@ async def chat_stream(
             rebind_bus(session, bus)
 
             async def produce() -> None:
-                ctx = session.ctx
-                agent = session.agent
-                orchestrator = session.orchestrator
-                medication_agent = session.medication_agent
-
-                symptom_summary = agent.symptom_summary()
-                intent = await orchestrator.classify_intent(message, symptom_summary)
-                _ensure_encounter_for_intent(session, intent)
-
-                if intent == Intent.OUT_OF_SCOPE:
-                    await orchestrator.handle_out_of_scope()
-                elif intent == Intent.FOLLOWUP:
-                    await orchestrator.handle_followup(message)
-                elif intent == Intent.NEW_SYMPTOM:
-                    ctx.messages.clear()
-                    agent.reset_graph_state()
-                    await agent.handle(message)
-                elif intent == Intent.MEDICATION:
-                    await medication_agent.handle(message)
-                elif intent == Intent.HEALTH_REPORT:
-                    await session.health_report_agent.handle(message)
-                else:
-                    await agent.handle(message)
-
+                await _dispatch_message(session, message)
                 await bus.close()
 
             produce_task = asyncio.create_task(produce())

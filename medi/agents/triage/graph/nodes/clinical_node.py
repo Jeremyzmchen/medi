@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 
+from langgraph.types import Command
+
 from medi.agents.triage.graph.state import (
     ClinicalAssessment,
     TriageGraphState,
@@ -50,7 +52,7 @@ async def clinical_node(
     constraint_prompt: str,
     session_id: str,
     obs=None,
-) -> dict:
+) -> Command:
     """
     ClinicalNode 执行函数。
 
@@ -148,14 +150,17 @@ async def clinical_node(
         status="needs_more_info" if next_node == "intake" else "complete",
     )
 
-    return {
-        "clinical_assessment": clinical_assessment,
-        "workflow_control": {
-            "next_node": next_node,
-            "intake_complete": True,
-            "graph_iteration": graph_iteration,
+    return Command(
+        update={
+            "clinical_assessment": clinical_assessment,
+            "workflow_control": {
+                "next_node": next_node,
+                "intake_complete": True,
+                "graph_iteration": graph_iteration,
+            },
         },
-    }
+        goto=next_node,
+    )
 
 
 async def _generate_differential(

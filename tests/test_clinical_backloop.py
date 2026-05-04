@@ -1,4 +1,11 @@
+from types import SimpleNamespace
+
+import pytest
+
+import medi.agents.triage.graph.nodes.clinical_node as clinical_module
 from medi.agents.triage.graph.nodes.clinical_node import _missing_for_diagnosis
+from medi.agents.triage.urgency_evaluator import UrgencyLevel, UrgencyResult
+from medi.core.stream_bus import AsyncStreamBus
 
 
 def test_clinical_missing_for_diagnosis_returns_explicit_slots() -> None:
@@ -59,3 +66,119 @@ def test_clinical_missing_for_diagnosis_does_not_repeat_unknown_answer() -> None
     assert "hpi.associated_symptoms" not in missing
     assert "hpi.radiation" not in missing
     assert "specific.dyspnea_sweating" not in missing
+
+
+class _RouterStub:
+    async def route(self, query_text: str, top_k: int = 3):
+        return [
+            SimpleNamespace(department="神经内科", confidence=0.82, reason="头痛相关"),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_clinical_node_routes_with_command_to_output(monkeypatch) -> None:
+    async def fake_urgency(**kwargs):
+        return UrgencyResult(
+            level=UrgencyLevel.NORMAL,
+            reason="普通就医",
+            triggered_by_rule=False,
+        )
+
+    async def fake_differential(**kwargs):
+        return [
+            {
+                "condition": "偏头痛",
+                "likelihood": "high",
+                "reasoning": "症状匹配",
+                "supporting_symptoms": ["头痛"],
+                "risk_factors": [],
+            }
+        ]
+
+    monkeypatch.setattr(clinical_module, "evaluate_urgency_by_llm", fake_urgency)
+    monkeypatch.setattr(clinical_module, "_generate_differential", fake_differential)
+    monkeypatch.setattr(
+        clinical_module,
+        "evaluate_risk_factors",
+        lambda symptom_summary, profile_snapshot: {
+            "risk_factors": [],
+            "risk_summary": "",
+            "elevated_urgency": False,
+        },
+    )
+
+    result = await clinical_module.clinical_node(
+        {
+            "session_id": "s1",
+            "messages": [{"role": "user", "content": "头痛"}],
+            "preconsultation_record": {},
+            "clinical_facts": [],
+            "workflow_control": {"graph_iteration": 1},
+        },
+        bus=AsyncStreamBus(),
+        router=_RouterStub(),
+        smart_chain=[],
+        fast_chain=[],
+        profile_snapshot=None,
+        constraint_prompt="",
+        session_id="s1",
+    )
+
+    assert result.goto == "output"
+    assert result.update["workflow_control"]["next_node"] == "output"
+    assert result.update["clinical_assessment"]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_clinical_node_routes_with_command_to_intake(monkeypatch) -> None:
+    async def fake_urgency(**kwargs):
+        return UrgencyResult(
+            level=UrgencyLevel.NORMAL,
+            reason="普通就医",
+            triggered_by_rule=False,
+        )
+
+    async def fake_differential(**kwargs):
+        return [
+            {
+                "condition": "待评估",
+                "likelihood": "medium",
+                "reasoning": "信息不足",
+                "supporting_symptoms": [],
+                "risk_factors": [],
+            }
+        ]
+
+    monkeypatch.setattr(clinical_module, "evaluate_urgency_by_llm", fake_urgency)
+    monkeypatch.setattr(clinical_module, "_generate_differential", fake_differential)
+    monkeypatch.setattr(
+        clinical_module,
+        "evaluate_risk_factors",
+        lambda symptom_summary, profile_snapshot: {
+            "risk_factors": [],
+            "risk_summary": "",
+            "elevated_urgency": False,
+        },
+    )
+
+    result = await clinical_module.clinical_node(
+        {
+            "session_id": "s1",
+            "messages": [{"role": "user", "content": "胸痛"}],
+            "intake_plan": {"protocol_id": "chest_pain"},
+            "preconsultation_record": {},
+            "clinical_facts": [],
+            "workflow_control": {"graph_iteration": 1},
+        },
+        bus=AsyncStreamBus(),
+        router=_RouterStub(),
+        smart_chain=[],
+        fast_chain=[],
+        profile_snapshot=None,
+        constraint_prompt="",
+        session_id="s1",
+    )
+
+    assert result.goto == "intake"
+    assert result.update["workflow_control"]["next_node"] == "intake"
+    assert result.update["clinical_assessment"]["status"] == "needs_more_info"

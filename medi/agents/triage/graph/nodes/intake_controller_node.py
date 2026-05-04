@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sys
 
+from langgraph.types import Command
+
 from medi.agents.triage.graph.state import (
     ControllerDecision,
     MAX_INTAKE_ROUNDS,
@@ -32,7 +34,7 @@ async def intake_controller_node(
     bus: AsyncStreamBus,
     profile_snapshot=None,
     max_rounds: int = MAX_INTAKE_ROUNDS,
-) -> dict:
+) -> Command:
     """Select the next subtask and route to Prompter or Clinical."""
     session_id = state["session_id"]
     messages = state.get("messages") or []
@@ -96,27 +98,33 @@ async def intake_controller_node(
             "controller": decision,
             "current_task": None,
         })
-        return {
-            "task_board": task_board,
-            "workflow_control": {
-                "next_node": "clinical",
-                "intake_complete": True,
-                "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+        return Command(
+            update={
+                "task_board": task_board,
+                "workflow_control": {
+                    "next_node": "clinical",
+                    "intake_complete": True,
+                    "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+                },
             },
-        }
+            goto="clinical",
+        )
 
     task_board.update({
         "controller": decision,
         "current_task": selected_task,
     })
-    return {
-        "task_board": task_board,
-        "workflow_control": {
-            "next_node": "prompter",
-            "intake_complete": False,
-            "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+    return Command(
+        update={
+            "task_board": task_board,
+            "workflow_control": {
+                "next_node": "prompter",
+                "intake_complete": False,
+                "graph_iteration": (state.get("workflow_control") or {}).get("graph_iteration", 0),
+            },
         },
-    }
+        goto="prompter",
+    )
 
 
 def _decide_finish(

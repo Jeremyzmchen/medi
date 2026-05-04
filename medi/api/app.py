@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from medi.api.routes.chat import router as chat_router
 from medi.api.routes.observe import router as observe_router
 from medi.api.routes.upload import router as upload_router
+from medi.core.langgraph_checkpoint import checkpoint_provider
 
 
 @asynccontextmanager
@@ -31,8 +32,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except ImportError:
         pass
 
-    yield
-    # 关闭时可在此做清理（如关闭数据库连接池）
+    await checkpoint_provider.start()
+    try:
+        yield
+    finally:
+        await checkpoint_provider.stop()
 
 
 app = FastAPI(

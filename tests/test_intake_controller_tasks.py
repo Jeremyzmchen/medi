@@ -1,8 +1,11 @@
 from medi.agents.triage.graph.nodes.intake_controller_node import (
+    intake_controller_node,
     _decide_finish,
     _select_next_task,
     _task_instruction,
 )
+from medi.core.stream_bus import AsyncStreamBus
+import pytest
 
 
 def test_controller_selects_highest_value_pending_task() -> None:
@@ -107,3 +110,73 @@ def test_controller_does_not_use_preferred_exit_when_safety_or_red_flags_missing
 
     assert can_finish is False
     assert "Current Medications" in reason
+
+
+@pytest.mark.asyncio
+async def test_controller_routes_with_command_to_prompter() -> None:
+    result = await intake_controller_node(
+        {
+            "session_id": "s1",
+            "messages": [{"role": "user", "content": "headache"}],
+            "task_board": {
+                "monitor": {
+                    "score": 20,
+                    "red_flags_checked": False,
+                    "safety_slots_covered": False,
+                    "doctor_summary_ready": False,
+                },
+                "progress": {
+                    "T2_ONSET": {
+                        "task_id": "T2_ONSET",
+                        "base_priority": 85,
+                        "critical": False,
+                        "score": 0.0,
+                        "requirement_details": [],
+                    },
+                },
+                "pending_tasks": ["T2_ONSET"],
+                "task_rounds": {},
+            },
+            "workflow_control": {"graph_iteration": 0},
+        },
+        bus=AsyncStreamBus(),
+    )
+
+    assert result.goto == "prompter"
+    assert result.update["workflow_control"]["next_node"] == "prompter"
+    assert result.update["task_board"]["current_task"] == "T2_ONSET"
+
+
+@pytest.mark.asyncio
+async def test_controller_routes_with_command_to_clinical() -> None:
+    result = await intake_controller_node(
+        {
+            "session_id": "s1",
+            "messages": [{"role": "user", "content": "headache"}],
+            "task_board": {
+                "monitor": {
+                    "score": 95,
+                    "red_flags_checked": True,
+                    "safety_slots_covered": True,
+                    "doctor_summary_ready": True,
+                },
+                "progress": {
+                    "T2_ONSET": {
+                        "task_id": "T2_ONSET",
+                        "base_priority": 85,
+                        "critical": False,
+                        "score": 1.0,
+                        "requirement_details": [],
+                    },
+                },
+                "pending_tasks": [],
+                "task_rounds": {},
+            },
+            "workflow_control": {"graph_iteration": 0},
+        },
+        bus=AsyncStreamBus(),
+    )
+
+    assert result.goto == "clinical"
+    assert result.update["workflow_control"]["next_node"] == "clinical"
+    assert result.update["task_board"]["current_task"] is None

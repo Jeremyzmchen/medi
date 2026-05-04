@@ -36,6 +36,17 @@ class MonitorResult(TypedDict, total=False):
     reason: str                         # 可解释性说明
 
 
+class SafetyGateResult(TypedDict, total=False):
+    """Graph-level safety gate decision for the latest user message."""
+    status: str                         # "passed" | "blocked"
+    urgency_level: str | None           # emergency when blocked by red-flag rules
+    reason: str                         # decision explanation
+    triggered_by_rule: bool             # True when deterministic red-flag rules fired
+    method: str                         # "rule" | "llm" | "none" | fallback marker
+    risk_concept: str | None            # matched emergency concept
+    confidence: float | None            # classifier confidence when available
+
+
 class ControllerDecision(TypedDict, total=False):
     """
     Controller 节点输出：全局调度决策。
@@ -239,6 +250,7 @@ class TriageGraphState(TypedDict, total=False):
     messages: Annotated[list[dict], operator.add]
 
     # ── Intake nurse state ──
+    safety_gate: SafetyGateResult
     intake_plan: IntakePlanState            # 当前匹配到的主诉采集协议和叠加规则
     clinical_facts: list[dict]                # 已抽取的临床事实槽，供下一轮合并去重
     preconsultation_record: PreconsultationRecord  # ClinicalFacts 投影出的 T1/T2/T3/T4 预诊档案

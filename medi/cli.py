@@ -361,7 +361,7 @@ async def _chat_loop(user_id: str) -> None:
                 await orchestrator.handle_followup(user_input)
             elif intent == Intent.NEW_SYMPTOM:
                 ctx.messages.clear()
-                triage_agent.reset_graph_state()
+                await triage_agent.reset_graph_state()
                 await triage_agent.handle(user_input)
             elif intent == Intent.MEDICATION:
                 await medication_agent.handle(user_input)

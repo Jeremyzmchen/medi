@@ -38,6 +38,27 @@ class ChatResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ResumeStateResponse(BaseModel):
+    status: str
+    session_id: str
+    pending_question: Optional[str] = None
+    pending_task: Optional[str] = None
+    why_needed: Optional[str] = None
+    collected_summary: str = ""
+    missing_summary: list[str] = Field(default_factory=list)
+    recent_messages: list[dict[str, Any]] = Field(default_factory=list)
+    last_updated_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    recommended_action: str = "start"
+    actions: list[str] = Field(default_factory=list)
+
+
+class SessionActionResponse(BaseModel):
+    session_id: str
+    status: str
+    message: str
+
+
 class SessionInfo(BaseModel):
     session_id: str
     start_time: str

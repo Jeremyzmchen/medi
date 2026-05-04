@@ -22,6 +22,7 @@ import functools
 from langgraph.graph import StateGraph, END
 
 from medi.agents.triage.graph.state import TriageGraphState
+from medi.agents.triage.graph.nodes.safety_gate_node import safety_gate_node
 from medi.agents.triage.graph.nodes.intake_node import intake_node
 from medi.agents.triage.graph.nodes.intake_monitor_node import intake_monitor_node
 from medi.agents.triage.graph.nodes.intake_controller_node import intake_controller_node
@@ -45,8 +46,16 @@ def build_triage_graph(
     episodic: EpisodicMemory,
     session_id: str,
     obs=None,
+    checkpointer=None,
 ):
     # 不同节点绑定不同依赖
+
+    bound_safety_gate = functools.partial(
+        safety_gate_node,
+        bus=bus,
+        fast_chain=fast_chain,
+        obs=obs,
+    )
 
     bound_intake = functools.partial(
         intake_node,
@@ -106,6 +115,7 @@ def build_triage_graph(
     )
 
     builder = StateGraph(TriageGraphState)
+    builder.add_node("safety_gate", bound_safety_gate, destinations=("intake", END))
     builder.add_node("intake", bound_intake)
     builder.add_node("monitor", bound_intake_monitor)
     builder.add_node("controller", bound_intake_controller)
@@ -115,56 +125,27 @@ def build_triage_graph(
     builder.add_node("output", bound_output)
 
     # 图节点入口
-    builder.set_entry_point("intake")
+    builder.set_entry_point("safety_gate")
 
     # intake 永远路由到 monitor
+    # safety_gate uses Command(goto=...) to continue to intake or stop at END.
+
     builder.add_edge("intake", "monitor")
 
     # monitor 永远路由到 controller
     builder.add_edge("monitor", "controller")
 
     # controller 条件判断边
-    builder.add_conditional_edges(
-        "controller",
-        _route_from_controller,
-        {
-            "clinical": "clinical",
-            "prompter": "prompter",
-        },
-    )
+    # controller returns Command(goto=...) to choose clinical or prompter.
 
     builder.add_edge("prompter", "inquirer")
     # inquirer pauses with interrupt(); after Command(resume=...) it appends the
-    # patient's answer and routes back through intake for fact extraction.
-    builder.add_edge("inquirer", "intake")
+    # patient's answer and routes back through safety_gate before fact extraction.
+    builder.add_edge("inquirer", "safety_gate")
     
     # 判断科室前最多再走一轮询问
-    builder.add_conditional_edges(
-        "clinical",
-        _route_from_clinical,
-        {
-            "output": "output",
-            "intake": "intake",
-        },
-    )
+    # clinical returns Command(goto=...) to choose output or back-loop to intake.
 
     builder.add_edge("output", END)
 
-    return builder.compile()
-
-
-def _route_from_controller(state: TriageGraphState) -> str:
-    control = state.get("workflow_control") or {}
-    if control.get("intake_complete"):
-        return "clinical"
-    return "prompter"
-
-
-def _route_from_clinical(state: TriageGraphState) -> str:
-    control = state.get("workflow_control") or {}
-    next_node = control.get("next_node", "output")
-    iteration = control.get("graph_iteration", 1)
-    # 最多再回去问一次
-    if next_node == "intake" and iteration < 2:
-        return "intake"
-    return "output"
+    return builder.compile(checkpointer=checkpointer)
