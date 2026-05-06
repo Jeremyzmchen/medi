@@ -1,6 +1,7 @@
 .env
 data/
 docs/
+DESIGN.md
 __pycache__/
 *.pyc
 .venv/
